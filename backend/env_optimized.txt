@@ -1,0 +1,40 @@
+# 🔧 OPTIMIZED: Environment Variables for 70%+ Confidence and Success Rate
+
+# Enhanced RAG Fusion Scoring Parameters
+RANK_ALPHA_4O=0.4
+RANK_ALPHA_FT=0.85
+RANK_BETA=0.20
+RANK_GAMMA=0.15
+
+# Enhanced Low Confidence Thresholds
+LOWCONF_SCORE_TH=0.45
+LOWCONF_MARGIN_TH=0.08
+
+# Enhanced Scoring Bonuses
+ENHANCED_KEYWORD_BONUS=0.25
+COLOR_BONUS=0.20
+SHAPE_BONUS=0.18
+POSITION_BONUS=0.15
+QUANTITY_BONUS=0.12
+
+# Scene-specific Thresholds
+SCENE_A_MS_THRESHOLD=0.70
+SCENE_B_STUDIO_THRESHOLD=0.75
+
+# Enhanced Retrieval Parameters
+ENHANCED_RETRIEVAL_TOP_K=20
+ENHANCED_RETRIEVAL_MIN_SCORE=0.35
+
+# BM25 + Embedding Fusion Weights
+BM25_WEIGHT=0.60
+EMBEDDING_WEIGHT=0.40
+
+# Semantic Similarity Thresholds
+SEMANTIC_SIMILARITY_THRESHOLD=0.65
+KEYWORD_OVERLAP_THRESHOLD=0.30
+
+# Other Settings
+LLM_MODEL=gpt-4o-mini
+LLM_TEMPERATURE=0
+STEP_LEN_M=0.7
+BLIP_DEVICE=cpu

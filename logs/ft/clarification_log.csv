@@ -1,0 +1,80 @@
+site_id,run_id,ts_iso,clar_id,session_id,provider,req_id,round_idx,event,user_text,system_text,resolved_node_id,gt_node_id,success
+SCENE_A_MS,FT-SCENE_A_MS-1755269628600,2025-08-15T14:55:38.208557,qa_0c2832ae-ebd2-465e-a538-38b007af5d31,T06,ft,qa_location_aware,qa_1febabff-75db-4533-b82d-754ea7067c1a,1,location_qa,Where should I go now?,"1. **Abstract Navigation Guidance**: Move towards the area where tools and materials are typically organized. Look for pathways that lead to workspaces or assembly zones.
+
+2. **Turn-by-Turn Guidance**: If you are facing the workbench, take a step back, then turn to your right. Walk forward for about five steps, then turn left and continue straight for another five steps.
+
+3. **Photo Suggestion**: If you feel uncertain about your surroundings, consider taking a photo to clarify your location.
+
+4. **General Movement Guidance**: Walk forward a few steps, turn right, and proceed straight ahead. 
+
+5. **Location Stability Recommendations**: Since your location is changing, stay alert and move cautiously. If you feel disoriented, pause and reassess your surroundings before proceeding.",workbench_electronics,,success
+SCENE_A_MS,FT-SCENE_A_MS-1755269807923,2025-08-15T14:58:48.664057,qa_40e33aee-faa1-4e25-ac5b-507c18e0dfab,T06,ft,qa_location_aware,qa_bcbee13a-57cd-44ef-b2ef-ac6b33ed4c58,1,location_qa,,"1. **Abstract Navigation Guidance**: You are in a stable area. To navigate effectively, focus on moving towards the nearest exit or point of interest, keeping an eye on your surroundings for landmarks.
+
+2. **Turn-by-Turn Guidance**: 
+   - If facing forward, take a few steps ahead.
+   - Turn right and continue straight for a short distance.
+   - Look for a pathway or corridor to your left.
+
+3. **Photo Suggestion**: If your current view is unclear, consider retaking a photo to help clarify your surroundings.
+
+4. **General Movement Guidance**: 
+   - Walk forward a few steps.
+   - Turn left and proceed straight.
+   - After a short distance, turn right.
+
+5. **Recommendations Based on Location Stability**: Since your location is very stable, feel free to explore nearby areas confidently, but remain aware of your surroundings to avoid getting lost.",Sense_A_4o_0,,success
+SCENE_A_MS,FT-SCENE_A_MS-1755269807923,2025-08-15T14:59:02.694884,qa_a28ed40a-3557-4026-b794-5fb97184d2c9,T06,ft,qa_location_aware,qa_cd75586d-99c0-43d2-a382-030a510c6890,1,location_qa,I have reached the chair. How should I go to the A train?,"1. **Abstract Navigation Guidance**: From your current position near the seating area, you will need to head towards the main corridor that leads to the transit area.
+
+2. **Turn-by-Turn Guidance**: 
+   - Start by facing the main corridor.
+   - Walk forward a few steps until you reach the intersection.
+   - Turn right at the intersection.
+   - Continue straight for a short distance until you see the entrance to the transit area.
+
+3. **Photo Suggestion**: If you feel uncertain about your surroundings, consider retaking a photo to confirm your location.
+
+4. **General Movement Guidance**: 
+   - Walk forward a few steps.
+   - Turn right.
+   - Continue straight ahead.
+
+5. **Recommendations Based on Location Stability**: Since your location is very stable, you can confidently follow these directions without frequent adjustments.",Sense_A_4o_0,,success
+SCENE_A_MS,FT-SCENE_A_MS-1755536453156,2025-08-18T17:01:11.484489,qa_b52eafd6-18ba-46bf-94c0-b369d104f527,T06,ft,qa_location_aware,qa_306591c1-c6bd-46cd-8708-398fa3537a30,1,location_qa,Where am I now?,"1. **Abstract Navigation Guidance**: You are in a stable area with clear pathways. Focus on moving towards open spaces or well-lit zones to help identify your surroundings.
+
+2. **Turn-by-Turn Guidance**: 
+   - If facing forward, take a few steps ahead.
+   - Turn left and walk straight for about 10 steps.
+   - Turn right and continue for another 5 steps.
+
+3. **Photo Suggestion**: If your location feels unclear, consider taking a photo of your surroundings to help identify landmarks or features.
+
+4. **General Movement Guidance**: 
+   - Walk forward a few steps.
+   - Turn left and proceed straight.
+   - After that, turn right and move ahead.
+
+5. **Recommendations Based on Location Stability**: Since your location is stable, feel free to explore nearby areas cautiously. Keep an eye out for signs or markers that can help you orient yourself further.",,,success
+SCENE_A_MS,FT-SCENE_A_MS-1755536453156,2025-08-18T17:01:19.493116,qa_7cc01734-54c0-450b-a610-45365fb9a6b0,T06,ft,qa_location_aware,qa_33b8ad02-789d-406d-a6a7-c9f19604ed65,1,location_qa,Where am I now?,"1. **Abstract Navigation Guidance**: You are in a stable area with multiple pathways. Look for signs or landmarks to help identify your surroundings.
+
+2. **Turn-by-Turn Guidance**: Since your orientation is unknown, start by facing forward. Walk straight ahead for about 10 steps, then turn right and continue for another 5 steps.
+
+3. **Photo Suggestion**: If you still feel uncertain about your location, consider taking a photo of your surroundings to help identify key features.
+
+4. **General Movement Guidance**: Walk forward a few steps, then turn left. After that, take a few more steps forward.
+
+5. **Recommendations Based on Location Stability**: Since your location is stable, feel free to explore nearby areas. Stay aware of your surroundings and look for familiar signs or markers.",,,success
+SCENE_B_STUDIO,FT-SCENE_B_STUDIO-1755545040194,2025-08-18T19:25:38.540973,qa_277a1cef-423c-4bc2-bc2f-a722d374adfb,T06,ft,qa_location_aware,qa_8987474b-aae7-41cc-adc7-2b40bf4ec3af,1,location_qa,"我睡著了,背上了照片,Where am I?","1. **Abstract Navigation Guidance**: You are near a large display area. To find your way, focus on moving towards the main activity zone or gathering space.
+
+2. **Turn-by-Turn Guidance**: 
+   - If you are facing the screen, take a step back and turn to your right.
+   - Walk forward for about five steps.
+   - Turn left and continue straight for another five steps.
+
+3. **Photo Retake Suggestion**: If your surroundings still seem unclear, consider taking another photo to help identify your location better.
+
+4. **General Movement Guidance**: 
+   - Walk forward a few steps.
+   - Turn left and move forward again.
+   - If you feel uncertain, take a moment to look around and assess your surroundings.
+
+5. **Recommendations Based on Location Stability**: Since your location is changing, stay alert and adjust your movements based on nearby sounds or visual cues. If you feel disoriented, pause and reassess your direction before",tv screen,,success

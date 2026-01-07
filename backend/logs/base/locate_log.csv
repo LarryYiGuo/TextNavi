@@ -1,0 +1,2 @@
+site_id,run_id,ts_iso,req_id,session_id,provider,phase,caption,top1_id,top1_score,top2_id,top2_score,margin,gt_node_id,hit_top1,hit_top2,hit_hop1,low_conf,low_conf_rule,client_start_ms,server_recv_ms,server_resp_ms
+SCENE_A_MS,WARMUP,2025-08-15T14:38:26.583419,7e868e20-3cb5-4eb4-891c-25f1cfba5ca7,T06,base,warmup,First photo - preset output,,,,,,,,,,,,,,1755268700048,1755268700418,1755268706583

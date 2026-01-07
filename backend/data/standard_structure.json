@@ -1,0 +1,72 @@
+{ 
+  "input": "hallway_section",
+
+  "basic": {
+    "id": "...",
+    "type": "...",
+    "level": "...",
+    "name": "...",
+    "region_id": "..."
+  },
+
+  "indoorgml": {
+    "class": "State|Transition",
+    "cellspace": "...",
+    "transition": "..."
+  },
+
+  "retrieval": {
+    "landmarks": ["red door", "exit sign", "..."],
+    "cnl_index": ["nodeA nodeB landmark"],
+    "index_terms": ["hallway", "red door", "exit sign"],
+    "tags": ["accessible", "wide"],
+    "keywords": ["turn right", "straight ahead"]
+  },
+
+  "topology": {
+    "nodes": ["nodeA", "nodeB", "..."],
+    "edges": [["nodeA","nodeB"], ["nodeB","nodeC"]],
+    "neighbors": [
+      {"from": "nodeA", "to": "nodeB", "action": "turn right"}
+    ]
+  },
+
+  "utterance": {
+    "instruction_templates": {
+      "overview": "...",
+      "step": "...",
+      "confirm": "...",
+      "reassure": "..."
+    }
+  },
+
+  "clarification_uncertainty": {
+    "clarify_templates": {
+      "uncertain": "...",
+      "dual_choice": "...",
+      "none": "..."
+    },
+    "uncertainty_policy": {
+      "threshold": 0.6,
+      "abstain_phrase": "...",
+      "dual_candidate": true
+    }
+  },
+
+  "proactivity": {
+    "proactive_triggers": {
+      "approach_turn_m": 3,
+      "timeout_s": 10,
+      "open_area_hint": true
+    }
+  },
+
+  "accessibility": {
+    "voiceover": "...",
+    "aria": "...",
+    "touch_target_mm": 12,
+    "wcag_profile": "AA"
+  },
+
+  "output": "Natural language description of how to move from nodeA to nodeB, mentioning landmarks like the red door and exit sign."
+}

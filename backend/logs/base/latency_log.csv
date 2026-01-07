@@ -1,0 +1,2 @@
+site_id,run_id,ts_iso,req_id,session_id,provider,phase,client_start_ms,client_tts_start_ms,e2e_latency_ms
+SCENE_A_MS,BASE-SCENE_A_MS-1755268706571,2025-08-15T14:38:26.665770,7e868e20-3cb5-4eb4-891c-25f1cfba5ca7,T06,base,trial,1755268700048,1755268706564,6516

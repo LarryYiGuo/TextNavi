@@ -1,0 +1,34 @@
+[
+  {
+    "id": "Sense_A_4o_0",
+    "scene_id": "SCENE_A_MS",
+    "provider": "base",
+    "nl_text": "This space appears to be a maker or innovation workspace located inside a modern building, with bright lighting and an industrial-style ceiling featuring exposed pipes and fixtures. The floor is covered with gray vinyl flooring, marked with yellow lines to designate activity or passage areas. The room contains several wheeled worktables and storage cabinets, with 3D printers, toolboxes, and small electronic devices on the tabletops, alongside stacks of cardboard boxes, likely packaging for materials or equipment. Along one wall, there are black drawer cabinets topped with additional equipment and accessories. The entrance consists of double automatic glass doors, through which a corridor and bookshelf area are visible. Inside, near the entrance, a wheeled bookshelf holds books, magazines, folders, and some decorative items. The space includes both office desks with monitors and equipment suited for hands-on fabrication, with a layout that balances work, storage, and collaboration functions, creating an open and practical atmosphere.",
+    "struct_text": "",
+    "source_file": "Sence_A_4o.fixed.jsonl"
+  },
+  {
+    "id": "Sense_A_FT_0",
+    "scene_id": "SCENE_A_MS",
+    "provider": "ft",
+    "nl_text": "Face forward and walk six steps. Slow at step five to bypass boxes. Continue straight to enter the open atrium. Landmarks: QR-code bookshelf behind; drawer wall on your right.",
+    "struct_text": "objects=3d black bookshelf bright component maker open qr stack; relations=straight-6-steps hazard-box_stack_floor_at_5 right-3-steps straight-4-steps hazard-clutter_boxes; spatial=bearing-straight distance-6-steps bearing-right distance-3-steps bearing-straight distance-4-steps; keywords=open atrium open area boxes on floor cardboard boxes drawer wall qr bookshelf green recycling bin",
+    "source_file": "Sense_A_Finetuned.fixed.jsonl"
+  },
+  {
+    "id": "Sense_B_4o_0",
+    "scene_id": "SCENE_B_STUDIO",
+    "provider": "base",
+    "nl_text": "This space is a multifunctional work and meeting environment, combining office, research and development, and leisure areas. Along the window side, large floor-to-ceiling windows allow sunlight to flood in, next to which are uniquely designed green and teal lounge chairs, creating a cozy relaxation corner. On the other side, there’s a workstation equipped with multiple monitors and office chairs, where someone is focused on work. The room features storage cabinets, shelves, and numerous transparent storage bins filled with various equipment and tools. The central area has a white meeting table surrounded by chairs in various colors, paired with a large-screen display for team discussions or presentations. Along the walls, there are casual sofas and high-back chairs in different styles, fostering a flexible, informal meeting atmosphere. Another section includes a glass-partitioned room for quiet, independent work, with a sign at the entrance reading “Global Disability Innovation Hub.” The interior wiring and lighting are exposed, and the ceiling features an industrial-style metal grid and pipes, creating a professional yet open environment ideal for creative collaboration and technical development.",
+    "struct_text": "",
+    "source_file": "Sense_B_4o.fixed.jsonl"
+  },
+  {
+    "id": "Sense_B_FT_0",
+    "scene_id": "SCENE_B_STUDIO",
+    "provider": "ft",
+    "nl_text": "Face forward. Walk five steps to the large window and stop. Turn left and walk five steps to the chair beside the orange sofa. Slow down near step three for a floor cable.",
+    "struct_text": "objects=chair floor-to-ceiling large middle orange storage studio; relations=straight-5-steps hazard-cable_floor_at_3 left-5-steps hazard-low_table_corner_left left-5-steps; spatial=bearing-straight distance-5-steps bearing-left distance-5-steps bearing-left distance-5-steps; keywords=glass window window wall sunlight orange sofa couch chair tv screen display storage shelves plastic boxes cable on floor low table",
+    "source_file": "Sense_B_Finetuned.fixed.jsonl"
+  }
+]

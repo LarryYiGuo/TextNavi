@@ -1,0 +1,3 @@
+site_id,run_id,ts_iso,req_id,session_id,provider,phase,caption,top1_id,top1_score,top2_id,top2_score,margin,gt_node_id,hit_top1,hit_top2,hit_hop1,low_conf,low_conf_rule,client_start_ms,server_recv_ms,server_resp_ms
+SCENE_A_MS,WARMUP,2025-08-15T14:39:38.740920,128438a0-7a26-435e-afc2-ad434707a8f7,T06,ft,warmup,First photo - preset output,,,,,,,,,,,,,,1755268777192,1755268777445,1755268778740
+SCENE_A_MS,FT-SCENE_A_MS-1755268778730,2025-08-15T14:40:13.060163,cb526407-69ee-45e1-b3d6-ea0ffcc70ab1,T06,ft,trial,there is a black machine with a red handle on a table,Sense_A_4o_0,0.406818,Sense_A_FT_0,0.306526,0.100292,,,,,false,,1755268807713,1755268807924,1755268813059

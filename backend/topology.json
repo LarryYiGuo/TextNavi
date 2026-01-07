@@ -1,0 +1,16 @@
+{
+  "SCENE_A_MS": {
+    "dp_ms_entrance": ["atrium_entry", "poi_component_drawer_wall", "poi_3d_printer_table", "dp_bookshelf_qr"],
+    "atrium_entry": ["dp_ms_entrance"],
+    "dp_bookshelf_qr": ["dp_ms_entrance", "poi_3d_printer_table"],
+    "poi_3d_printer_table": ["dp_ms_entrance", "dp_bookshelf_qr", "poi_component_drawer_wall"],
+    "poi_component_drawer_wall": ["dp_ms_entrance", "poi_3d_printer_table"]
+  },
+  "SCENE_B_STUDIO": {
+    "dp_studio_entry": ["node_window_glass", "poi_orange_sofa_chair", "poi_orange_sofa", "node_mid_studio"],
+    "node_window_glass": ["dp_studio_entry", "node_mid_studio"],
+    "poi_orange_sofa": ["dp_studio_entry", "node_mid_studio"],
+    "poi_orange_sofa_chair": ["dp_studio_entry"],
+    "node_mid_studio": ["dp_studio_entry", "poi_orange_sofa", "node_window_glass"]
+  }
+}

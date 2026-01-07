@@ -1,0 +1,16 @@
+site_id,run_id,ts_iso,clar_id,session_id,provider,req_id,round_idx,event,user_text,system_text,resolved_node_id,gt_node_id,success
+SCENE_A_MS,BASE-SCENE_A_MS-1755543875930,2025-08-18T19:04:47.551660,qa_8cea2b2c-513c-4757-8369-26817c24bc75,T06,base,qa_location_aware,qa_6cff07ae-a193-4859-81dd-7033196d562a,1,location_qa,,"1. **Abstract Navigation Guidance**: To navigate effectively, focus on moving towards open spaces or pathways that seem well-traveled. Look for signs or landmarks that can help orient you.
+
+2. **Turn-by-Turn Guidance**: 
+   - If facing forward, take a few steps ahead.
+   - Turn left and walk straight for about 10 steps.
+   - Turn right and continue for another 5 steps.
+
+3. **Photo Suggestion**: If your surroundings are unclear, consider taking a photo to help identify your location later.
+
+4. **General Movement Guidance**: 
+   - Walk forward a few steps.
+   - Turn left and proceed straight.
+   - After a short distance, turn right and keep moving.
+
+5. **Recommendations Based on Location Stability**: Since your location is stable, feel free to explore nearby areas cautiously. Stay aware of your surroundings and retrace your steps if needed.",,,success

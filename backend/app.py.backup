@@ -1,0 +1,2024 @@
+import os, io, time, json, tempfile, subprocess, numpy as np, csv, uuid
+from typing import Dict, Any
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+import requests
+from datetime import datetime
+from collections import defaultdict
+
+# Local BLIP model imports
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from PIL import Image
+import io
+
+# Note: If you encounter Hugging Face authentication issues, you can:
+# 1. Set HF_TOKEN environment variable in your .env file
+# 2. Run: huggingface-cli login
+# 3. Or use a different model that doesn't require authentication
+
+# ---------- Config ----------
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
+# HF_TOKEN  = os.getenv("HF_TOKEN", "")  # No longer needed for local BLIP
+# HF_MODEL  = os.getenv("HF_MODEL", "Salesforce/blip-image-captioning-large")  # No longer needed
+LLM_KEY   = os.getenv("OPENAI_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_TEMP  = float(os.getenv("LLM_TEMPERATURE", "0"))
+STEP_LEN  = float(os.getenv("STEP_LEN_M", "0.7"))
+
+# Local BLIP model configuration
+BLIP_MODEL_PATH = os.getenv("BLIP_MODEL_PATH", "Salesforce/blip-image-captioning-large")
+BLIP_DEVICE = os.getenv("BLIP_DEVICE", "cpu")
+
+DATA_DIR  = os.path.join(os.path.dirname(__file__), "data")
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+
+# ✅ New: Preset output mapping based on provider + site_id
+PRESET_OUTPUTS = {
+    "ft_SCENE_A_MS": "Sense_A_Finetuned.fixed.jsonl",
+    "ft_SCENE_B_STUDIO": "Sense_B_Finetuned.fixed.jsonl", 
+    "base_SCENE_A_MS": "Sence_A_4o.fixed.jsonl",
+    "base_SCENE_B_STUDIO": "Sense_B_4o.fixed.jsonl"
+}
+
+def get_preset_output(provider: str, site_id: str) -> str:
+    """Get preset output based on provider and site_id combination"""
+    key = f"{provider.lower()}_{site_id}"
+    filename = PRESET_OUTPUTS.get(key)
+    print(f"🔍 Looking for preset output: key={key}, filename={filename}")
+    
+    if not filename:
+        print(f"⚠️ No filename found for key: {key}")
+        return "Welcome! Please take a photo to start exploring."
+    
+    filepath = os.path.join(DATA_DIR, filename)
+    print(f"📁 Full filepath: {filepath}")
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            # Read first line (JSONL format)
+            first_line = f.readline().strip()
+            print(f"📖 First line: {first_line[:100]}...")
+            
+            if first_line:
+                data = json.loads(first_line)
+                output = data.get("output", "Welcome! Please take a photo to start exploring.")
+                print(f"✅ Found output: {output[:100]}...")
+                return output
+            else:
+                print("⚠️ Empty first line")
+                return "Welcome! Please take a photo to start exploring."
+    except Exception as e:
+        print(f"⚠️ Failed to load preset output from {filename}: {e}")
+        return "Welcome! Please take a photo to start exploring."
+
+def get_matching_data(provider: str, site_id: str) -> dict:
+    """Get matching data for BLIP text matching based on provider and site_id"""
+    key = f"{provider.lower()}_{site_id}"
+    filename = PRESET_OUTPUTS.get(key)
+    if not filename:
+        return {}
+    
+    filepath = os.path.join(DATA_DIR, filename)
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            # Read first line (JSONL format)
+            first_line = f.readline().strip()
+            if first_line:
+                data = json.loads(first_line)
+                return data
+            else:
+                return {}
+    except Exception as e:
+        print(f"⚠️ Failed to load matching data from {filename}: {e}")
+        return {}
+
+def get_detailed_matching_data(site_id: str) -> list:
+    """Get detailed matching data from SCENE_A_MS_detailed.jsonl for enhanced retrieval"""
+    if site_id != "SCENE_A_MS":
+        return []
+    
+    detailed_file = os.path.join(DATA_DIR, "SCENE_A_MS_detailed.jsonl")
+    try:
+        detailed_data = []
+        with open(detailed_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    data = json.loads(line)
+                    detailed_data.append(data)
+        print(f"✅ Loaded {len(detailed_data)} detailed descriptions from SCENE_A_MS_detailed.jsonl")
+        return detailed_data
+    except Exception as e:
+        print(f"⚠️ Failed to load detailed matching data: {e}")
+        return []
+
+def enhanced_ft_retrieval(caption: str, retriever, site_id: str, detailed_data: list) -> list:
+    """Enhanced retrieval for ft mode combining topology and detailed descriptions"""
+    print(f"🚀 Enhanced FT retrieval for {site_id}")
+    
+    # First: Get standard retrieval results
+    standard_candidates = retriever.retrieve(caption, top_k=15, scene_filter=site_id)
+    print(f"📊 Standard retrieval returned {len(standard_candidates)} candidates")
+    
+    # Second: Get detailed description matches
+    detailed_candidates = []
+    if detailed_data:
+        detailed_candidates = match_detailed_descriptions(caption, detailed_data)
+        print(f"📊 Detailed matching returned {len(detailed_candidates)} candidates")
+    
+    # Third: Combine and rank results
+    combined_candidates = combine_retrieval_results(standard_candidates, detailed_candidates, caption)
+    print(f"📊 Combined retrieval returned {len(combined_candidates)} final candidates")
+    
+    return combined_candidates[:10]  # Return top 10
+
+def match_detailed_descriptions(caption: str, detailed_data: list) -> list:
+    """Match caption against detailed descriptions using enhanced scoring"""
+    caption_lower = caption.lower()
+    matches = []
+    
+    for item in detailed_data:
+        score = 0.0
+        
+        # Score based on natural language text
+        nl_text = item.get("nl_text", "").lower()
+        if nl_text:
+            # Simple keyword matching with weights
+            keywords = extract_keywords(nl_text)
+            caption_keywords = extract_keywords(caption_lower)
+            
+            # Calculate overlap score
+            overlap = len(set(keywords) & set(caption_keywords))
+            if overlap > 0:
+                score += overlap * 0.1  # Base score for keyword overlap
+        
+        # Score based on structured text
+        struct_text = item.get("struct_text", "").lower()
+        if struct_text:
+            # Parse structured text for specific features
+            struct_score = parse_structured_text(caption_lower, struct_text)
+            score += struct_score
+        
+        # Add bonus for exact matches
+        if any(keyword in caption_lower for keyword in ["3d printer", "ender", "ultimaker", "oscilloscope", "workbench"]):
+            if any(keyword in nl_text for keyword in ["3d printer", "ender", "ultimaker", "oscilloscope", "workbench"]):
+                score += 0.3  # Significant bonus for key equipment matches
+        
+        if score > 0:
+            matches.append({
+                "id": item["id"],
+                "scene_id": item["scene_id"],
+                "provider": item["provider"],
+                "text": item["nl_text"],
+                "struct_text": item["struct_text"],
+                "score": score,
+                "score_nl": score,
+                "score_struct": 0.0,
+                "bonus_keywords": 0.0,
+                "bonus_bearing": 0.0,
+                "alpha_used": 0.8,
+                "source_file": item["source_file"],
+                "retrieval_method": "enhanced_detailed_matching"
+            })
+    
+    # Sort by score
+    matches.sort(key=lambda x: x["score"], reverse=True)
+    return matches
+
+def extract_keywords(text: str) -> list:
+    """Extract meaningful keywords from text"""
+    # Remove common words and extract key terms
+    stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "can", "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them"}
+    
+    words = text.lower().split()
+    keywords = [word for word in words if word not in stop_words and len(word) > 2]
+    return keywords
+
+def parse_structured_text(caption: str, struct_text: str) -> float:
+    """Parse structured text and calculate match score"""
+    score = 0.0
+    
+    # Parse structured text format: key=value; key=value
+    try:
+        parts = struct_text.split(";")
+        for part in parts:
+            if "=" in part:
+                key, value = part.strip().split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # Check if caption contains this value
+                if value in caption:
+                    score += 0.1  # Base score for each match
+                    
+                    # Bonus for important features
+                    if key in ["objects", "location", "furniture"]:
+                        score += 0.05
+                    elif key in ["colors", "materials"]:
+                        score += 0.03
+    except:
+        pass
+    
+    return score
+
+def combine_retrieval_results(standard_candidates: list, detailed_candidates: list, caption: str) -> list:
+    """Combine and rank results from both retrieval methods"""
+    combined = []
+    
+    # Add standard candidates with their original scores
+    for candidate in standard_candidates:
+        candidate["retrieval_method"] = "standard_dual_channel"
+        combined.append(candidate)
+    
+    # Add detailed candidates, potentially boosting scores for good matches
+    for candidate in detailed_candidates:
+        # Check if this candidate is already in combined list
+        existing = next((c for c in combined if c["id"] == candidate["id"]), None)
+        if existing:
+            # Boost existing candidate score
+            existing["score"] = max(existing["score"], candidate["score"])
+            existing["retrieval_method"] = "combined_enhanced"
+            existing["detailed_match_score"] = candidate["score"]
+        else:
+            # Add new candidate
+            combined.append(candidate)
+    
+    # Sort by final score
+    combined.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Add confidence analysis
+    if len(combined) >= 2:
+        score_diff = combined[0]["score"] - combined[1]["score"]
+        for candidate in combined[:10]:
+            candidate["high_confidence"] = score_diff >= 0.05
+            candidate["score_diff"] = score_diff
+    
+    return combined
+
+# Session-level logging switch: key = (session_id, provider) -> {"enabled":bool, "run_id":str}
+LOG_SWITCH = defaultdict(lambda: {"enabled": False, "run_id": ""})
+
+# Logging configuration
+BASE_LOG_DIR = os.getenv("LOG_DIR", "logs")
+
+    # Create subdirectories by provider: logs/ft/* and logs/base/*
+def _log_paths(provider: str):
+    sub = "ft" if str(provider).lower() == "ft" else "base"
+    d = os.path.join(BASE_LOG_DIR, sub)
+    os.makedirs(d, exist_ok=True)
+    return {
+        "locate":    os.path.join(d, "locate_log.csv"),
+        "clar":      os.path.join(d, "clarification_log.csv"),
+        "recovery":  os.path.join(d, "recovery_log.csv"),
+        "latency":   os.path.join(d, "latency_log.csv"),
+    }
+
+HEADERS = {
+    # ✅ First column: site_id; Second column: run_id; Third column: phase
+    "locate":   ["site_id","run_id","ts_iso","req_id","session_id","provider",
+                 "phase",  # 👈 新增：warmup|trial
+                 "caption",
+                 "top1_id","top1_score",
+                 "top2_id","top2_score",
+                 "margin",
+                 "gt_node_id",
+                 "hit_top1","hit_top2","hit_hop1",
+                 "low_conf","low_conf_rule",
+                 "client_start_ms","server_recv_ms","server_resp_ms"],
+    "clar":     ["site_id","run_id","ts_iso","clar_id","session_id","provider",
+                 "phase",  # 👈 新增：warmup|trial
+                 "req_id","round_idx","event",  # event: trigger/step/success/fail
+                 "user_text","system_text",
+                 "resolved_node_id","gt_node_id","success"],
+    "recovery": ["site_id","run_id","ts_iso","session_id","provider",
+                 "phase",  # 👈 新增：warmup|trial
+                 "req_id","recovery_ms","from_node","to_node"],
+    "latency":  ["site_id","run_id","ts_iso","req_id","session_id","provider",
+                 "phase",  # 👈 新增：warmup|trial
+                 "client_start_ms","client_tts_start_ms","e2e_latency_ms"]
+}
+
+def _ensure_headers(paths: dict):
+    for kind, p in paths.items():
+        if not os.path.exists(p):
+            with open(p, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow(HEADERS[kind])
+
+def _is_logging(session_id: str, provider: str):
+    st = LOG_SWITCH[(session_id, (provider or "base").lower())]
+    return bool(st.get("enabled")), st.get("run_id") or ""
+
+def _now_ms(): 
+    """Get current time in milliseconds"""
+    return int(time.time() * 1000)
+
+# 低置信度阈值配置 - optimized for better user experience
+LOWCONF_SCORE_TH = float(os.getenv("LOWCONF_SCORE_TH", "0.30"))
+LOWCONF_MARGIN_TH = float(os.getenv("LOWCONF_MARGIN_TH", "0.05"))
+
+print(f"🔧 Low-confidence thresholds: score<{LOWCONF_SCORE_TH}, margin<{LOWCONF_MARGIN_TH}")
+
+# 加载拓扑
+try:
+    with open(os.path.join(os.path.dirname(__file__), "topology.json"), "r", encoding="utf-8") as f:
+        TOPO = json.load(f)
+    print("✅ Topology loaded successfully")
+except Exception as e:
+    print(f"⚠️  Failed to load topology: {e}")
+    TOPO = {}
+
+def is_hop1(site_id: str, a: str, b: str) -> bool:
+    """Check if two nodes are within 1 hop (directly connected)"""
+    if not a or not b: return False
+    if a == b: return True
+    g = TOPO.get(site_id, {})
+    return b in (g.get(a) or [])
+
+# ✅ 新增：RQ3 数据记录函数
+def record_misbelief(req_id: str, session_id: str, site_id: str, 
+                     predicted_node: str, gt_node_id: str, 
+                     clarification_triggered: bool, confidence: float):
+    """记录误信率数据"""
+    if not gt_node_id:
+        return
+    
+    misbelief = 1 if (predicted_node != gt_node_id and not clarification_triggered) else 0
+    
+    # 更新 locate_log.csv 中的 misbelief 字段
+    # 注意：这里需要找到对应的行并更新，或者在前端调用时直接传入
+    return misbelief
+
+def start_clarification_session(session_id: str, site_id: str, req_id: str, 
+                              predicted_node: str, gt_node_id: str, provider: str) -> str:
+    """Start clarification dialogue session, return clarification_id"""
+    clarification_id = str(uuid.uuid4())
+    
+    # Get log paths and ensure headers
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(session_id, provider)
+    if enabled:
+        with open(paths["clar"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id, datetime.utcnow().isoformat(), clarification_id, session_id, provider,
+                req_id, 1, "trigger",  # event: trigger
+                "Low confidence triggered", "Clarification started",
+                predicted_node, gt_node_id or "", False
+            ])
+    
+    print(f"🔍 Clarification session started: {clarification_id}")
+    return clarification_id
+
+def record_clarification_round(clarification_id: str, session_id: str, site_id: str,
+                              round_count: int, user_question: str, system_answer: str,
+                              predicted_node: str, gt_node_id: str, provider: str):
+    """Record each round of clarification dialogue"""
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(session_id, provider)
+    if enabled:
+        with open(paths["clar"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id, datetime.utcnow().isoformat(), clarification_id, session_id, provider,
+                "trial",  # phase: trial phase
+                "", round_count, "step",  # event: step
+                user_question, system_answer, predicted_node, gt_node_id or "", False
+            ])
+
+def end_clarification_session(clarification_id: str, session_id: str, site_id: str,
+                            total_rounds: int, final_predicted_node: str, gt_node_id: str, provider: str):
+    """End clarification dialogue session, record success rate"""
+    clarification_success = final_predicted_node == gt_node_id
+    
+    # Get log paths and ensure headers
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(session_id, provider)
+    if enabled:
+        with open(paths["clar"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id, datetime.utcnow().isoformat(), clarification_id, session_id, provider,
+                "trial",  # phase: trial phase
+                "", total_rounds, "success" if clarification_success else "fail",  # event: success/fail
+                f"Session ended", f"Final prediction: {final_predicted_node}", 
+                final_predicted_node, gt_node_id or "", clarification_success
+            ])
+    
+    print(f"🔍 Clarification session ended: {clarification_id}, success: {clarification_success}")
+
+def start_error_recovery(session_id: str, site_id: str, error_node: str, 
+                        correct_node: str, provider: str) -> str:
+    """Start error recovery timing, return recovery_id"""
+    recovery_id = str(uuid.uuid4())
+    error_start_time = _now_ms()
+    
+    # Get log paths and ensure headers
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(session_id, provider)
+    if enabled:
+        with open(paths["recovery"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id, datetime.utcnow().isoformat(), session_id, provider,
+                "trial",  # phase: trial phase
+                "", error_start_time, error_node, correct_node
+            ])
+    
+    print(f"⚠️  Error recovery started: {recovery_id}, from {error_node} to {correct_node}")
+    return recovery_id
+
+def end_error_recovery(recovery_id: str, session_id: str, site_id: str,
+                      correct_node: str, recovery_path: str = "", provider: str = ""):
+    """End error recovery timing, calculate recovery duration"""
+    if not provider:
+        print("⚠️  Provider not specified for error recovery end")
+        return 0
+    
+    # Get log paths and ensure headers
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(session_id, provider)
+    if enabled:
+        # Calculate recovery duration (simplified version, direct recording)
+        recovery_duration = _now_ms()  # This can be optimized for actual recovery duration calculation
+        
+        with open(paths["recovery"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id, datetime.utcnow().isoformat(), session_id, provider,
+                "trial",  # phase: trial phase
+                "", recovery_duration, "", correct_node
+            ])
+        
+        print(f"✅ Error recovery completed: {recovery_id}, duration: {recovery_duration}ms")
+        return recovery_duration
+    
+    return 0
+
+# ---------- Opening outputs (Independent variables only take effect here) ----------
+HARD_OUTPUTS_EN = {
+    "SCENE_A_MS": {
+        "base": "You are just inside the Maker Space entrance, facing inward. Walk straight about six steps. Around step five there is a stack of boxes—slow down and pass on one side. Beyond the boxes you enter the open atrium. Landmarks: QR-code bookshelf behind you; black drawer wall to your right.",
+        "ft":   "Face forward and walk six steps. Slow at step five to bypass boxes. Continue straight to enter the open atrium. Landmarks: QR-code bookshelf behind; drawer wall on your right."
+    },
+    "SCENE_B_STUDIO": {
+        "base": "You are at the studio entry facing the large window. Walk forward five steps to the window. Then turn left and walk about five steps to the chair next to the orange sofa. Watch your step—around step three there may be a floor cable.",
+        "ft":   "Face forward. Walk five steps to the large window and stop. Turn left and walk five steps to the chair beside the orange sofa. Slow down near step three for a floor cable."
+    }
+}
+HARD_OUTPUTS_ZH = {
+    "SCENE_A_MS": {
+        "base": "你在 Maker Space 入口内侧。直行约六步。第五步有纸箱，减速从一侧绕过。越过后进入开阔的中庭。确认点：身后二维码书架；右侧黑色抽屉墙。",
+        "ft":   "面向前方直行六步。第五步绕过纸箱，继续前行进入中庭。确认点：身后二维码书架；右侧抽屉墙。"
+    },
+    "SCENE_B_STUDIO": {
+        "base": "你在工作室入口，正对大窗。向前五步到窗前，再左转五步到橙色沙发旁的椅子。注意第三步可能有地面电缆。",
+        "ft":   "面向前方走五步至大窗停。再向左走五步到橙色沙发旁的椅子。第三步附近可能有电缆，请放慢。"
+    }
+}
+
+# ---------- Embedding & Index ----------
+from sentence_transformers import SentenceTransformer
+EMB = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
+# Import dual-channel retrieval
+try:
+    import sys
+    import os
+    # Add current directory to Python path
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    
+    from dual_channel_retrieval import DualChannelRetriever
+    DUAL_CHANNEL_AVAILABLE = True
+    print("✅ Dual channel retrieval module imported successfully")
+except ImportError as e:
+    print(f"⚠️  Dual channel retrieval module not available: {e}")
+    print("⚠️  Using legacy system")
+    DUAL_CHANNEL_AVAILABLE = False
+
+import pathlib
+
+try:
+    import faiss  # type: ignore
+    USE_FAISS = True
+except Exception:
+    from sklearn.neighbors import NearestNeighbors
+    USE_FAISS = False
+
+# Initialize unified dual-channel retriever
+MODEL_DIR_PATH = pathlib.Path(MODEL_DIR)
+UNIFIED_RETRIEVER = None
+
+def get_unified_retriever():
+    """Get or create unified dual-channel retriever"""
+    if not DUAL_CHANNEL_AVAILABLE:
+        print("⚠️  Dual channel retrieval module not available, using legacy system")
+        return None
+    
+    global UNIFIED_RETRIEVER
+    if UNIFIED_RETRIEVER is None:
+        try:
+            print("🔧 Initializing unified dual-channel retriever...")
+            UNIFIED_RETRIEVER = DualChannelRetriever(MODEL_DIR_PATH)
+            print(f"✅ Loaded unified dual-channel retriever successfully")
+        except Exception as e:
+            print(f"⚠️  Failed to load unified retriever: {e}")
+            print("⚠️  Falling back to legacy retrieval")
+            return None
+    return UNIFIED_RETRIEVER
+
+# Legacy scene loading (fallback)
+def load_scene_index(scene_id: str):
+    """Legacy function - kept for backward compatibility"""
+    npz = np.load(os.path.join(MODEL_DIR, f"{scene_id}.npz"), allow_pickle=True)
+    X = npz["X"].astype(np.float32)
+    texts = npz["texts"].tolist()
+    ids = json.loads(open(os.path.join(MODEL_DIR, f"{scene_id}.ids.json"), "r", encoding="utf-8").read())
+    if USE_FAISS:
+        index = faiss.read_index(os.path.join(MODEL_DIR, f"{scene_id}.faiss"))
+        return {"index": index, "X": X, "texts": texts, "ids": ids}
+    else:
+        nn = NearestNeighbors(n_neighbors=5, metric="cosine").fit(X)
+        return {"index": nn, "X": X, "texts": texts, "ids": ids}
+
+# Legacy scene loading (fallback)
+SCENE = {
+    "SCENE_A_MS": load_scene_index("SCENE_A_MS"),
+    "SCENE_B_STUDIO": load_scene_index("SCENE_B_STUDIO"),
+}
+
+# ---------- BLIP caption (Local Model) ----------
+# Initialize local BLIP model
+try:
+    processor = BlipProcessor.from_pretrained(BLIP_MODEL_PATH)
+    model = BlipForConditionalGeneration.from_pretrained(BLIP_MODEL_PATH)
+    print(f"✓ Loaded local BLIP model successfully: {BLIP_MODEL_PATH}")
+    print(f"✓ Using device: {BLIP_DEVICE}")
+except Exception as e:
+    print(f"⚠ Failed to load local BLIP model: {e}")
+    print("⚠ Image captioning will be disabled")
+    processor = None
+    model = None
+
+def hf_caption(image_bytes: bytes) -> str:
+    if processor is None or model is None:
+        return "an indoor workspace with desks and shelves"
+    
+    try:
+        # Convert bytes to PIL Image
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        inputs = processor(image, return_tensors="pt")
+        out = model.generate(**inputs)
+        caption = processor.decode(out[0], skip_special_tokens=True)
+        return caption
+    except Exception as e:
+        print(f"⚠ Error in local BLIP captioning: {e}")
+        return "an indoor workspace with desks and shelves"
+
+def guess_bearing_from_caption(caption: str) -> str:
+    t = caption.lower()
+    if "left" in t: return "left"
+    if "right" in t: return "right"
+    if "behind" in t or "back" in t: return "behind"
+    return "ahead"
+
+# ---------- ASR (faster-whisper) ----------
+from faster_whisper import WhisperModel
+
+# Set environment variables to handle Hugging Face Hub issues
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid deadlock warnings
+
+# Initialize ASR model with proper error handling
+ASR = None
+try:
+    # Try to load from local cache first
+    ASR = WhisperModel("small", device="cpu", compute_type="int8", local_files_only=True)
+    print("✓ Loaded faster-whisper model from local cache")
+except Exception as e:
+    print(f"⚠ Local cache not found: {e}")
+    try:
+        # Try to download with explicit settings
+        print("Attempting to download faster-whisper model...")
+        ASR = WhisperModel("small", device="cpu", compute_type="int8")
+        print("✓ Successfully downloaded and loaded faster-whisper model")
+    except Exception as download_error:
+        print(f"Failed to download 'small' model: {download_error}")
+        try:
+            # Try a different model that might be more accessible
+            print("Trying alternative model 'tiny'...")
+            ASR = WhisperModel("tiny", device="cpu", compute_type="int8")
+            print("✓ Successfully loaded 'tiny' model as fallback")
+        except Exception as alt_error:
+            print(f"Failed to download alternative model: {alt_error}")
+            print("ASR functionality will be disabled. Please check your internet connection or Hugging Face credentials.")
+            print("Alternative: Try using a different model or check if you have Hugging Face credentials set up.")
+            # Create a dummy ASR object to prevent crashes
+            class DummyASR:
+                def transcribe(self, *args, **kwargs):
+                    raise Exception("ASR model not available - download failed")
+            ASR = DummyASR()
+
+def webm_to_wav_16k_mono(data: bytes) -> bytes:
+    """Convert WebM audio to WAV format with better error handling"""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as fin, tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fout:
+            fin.write(data)
+            fin.flush()
+            
+            # Use more robust ffmpeg command with better error handling
+            cmd = [
+                "ffmpeg",
+                "-loglevel", "warning",  # Show warnings for debugging
+                "-y",  # Overwrite output file
+                "-i", fin.name,
+                "-ac", "1",  # Mono
+                "-ar", "16000",  # 16kHz sample rate
+                "-f", "wav",  # Force WAV format
+                fout.name
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            
+            if result.returncode != 0:
+                print(f"FFmpeg error: {result.stderr}")
+                print(f"FFmpeg stdout: {result.stdout}")
+                raise Exception(f"FFmpeg failed with return code {result.returncode}")
+            
+            # Read the converted file
+            with open(fout.name, 'rb') as f:
+                wav_data = f.read()
+            
+            # Clean up temporary files
+            os.unlink(fin.name)
+            os.unlink(fout.name)
+            
+            return wav_data
+            
+    except Exception as e:
+        print(f"Audio conversion error: {e}")
+        # Clean up any remaining temp files
+        try:
+            if 'fin' in locals(): os.unlink(fin.name)
+            if 'fout' in locals(): os.unlink(fout.name)
+        except:
+            pass
+        raise e
+
+def asr_bytes_to_text(data: bytes) -> str:
+    """Convert audio bytes to text with improved error handling"""
+    if not data or len(data) == 0:
+        print("Empty audio data received")
+        return ""
+    
+    print(f"Processing audio: {len(data)} bytes")
+    
+    # Check if it's already WAV format
+    buf = data
+    if not (len(buf) > 12 and buf[:4] == b"RIFF" and b"WAVE" in buf[:12]):
+        print("Converting WebM to WAV...")
+        try:
+            buf = webm_to_wav_16k_mono(data)
+            print(f"Conversion successful: {len(buf)} bytes WAV")
+        except Exception as e:
+            print(f"WebM to WAV conversion failed: {e}")
+            # Try to use original data as fallback
+            buf = data
+    
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            f.write(buf)
+            f.flush()
+            
+            print(f"Transcribing audio file: {f.name}")
+            segments, info = ASR.transcribe(f.name, beam_size=1, vad_filter=True)
+            text = "".join([s.text for s in segments]).strip()
+            
+            # Clean up temp file
+            os.unlink(f.name)
+            
+            print(f"Transcription result: '{text}'")
+            return text
+            
+    except Exception as e:
+        print(f"ASR transcription error: {e}")
+        # Clean up temp file
+        try:
+            if 'f' in locals(): os.unlink(f.name)
+        except:
+            pass
+        raise e
+
+# ---------- LLM fallback (intent only) ----------
+from openai import OpenAI
+OAI = OpenAI(api_key=LLM_KEY)
+INTENTS = ["repeat","lost","confirm_a","confirm_b","confirm_neither","to_atrium","distance_a","hazard_boxes","to_window","to_chair","distance_b","hazard_cable"]
+SYS_PROMPT = (
+    "Return JSON only. Identify the user's intent for indoor navigation.\n"
+    f"Allowed intents = {INTENTS}.\n"
+    "If nothing matches, return {\"intent\":\"unknown\"}."
+)
+def llm_intent(text: str) -> str:
+    if not text.strip(): return "unknown"
+    resp = OAI.chat.completions.create(
+        model=LLM_MODEL, temperature=LLM_TEMP,
+        response_format={"type":"json_object"},
+        messages=[{"role":"system","content":SYS_PROMPT},{"role":"user","content":text}],
+    )
+    try:
+        j = json.loads(resp.choices[0].message.content)
+        return j.get("intent","unknown")
+    except Exception:
+        return "unknown"
+
+# ---------- FastAPI ----------
+app = FastAPI(title="VLN4VI Backend", version="1.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict this
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "1.0.0",
+        "services": {
+            "asr_model": "loaded" if ASR else "not_loaded",
+            "blip_model": "loaded" if processor else "not_loaded",
+            "dual_channel_retriever": "available" if get_unified_retriever() else "not_available"
+        }
+    }
+
+# TTS start endpoint for end-to-end latency tracking
+class TTSMark(BaseModel):
+    req_id: str
+    session_id: str
+    site_id: str
+    provider: str  # ✅ 新增 provider 字段
+    client_start_ms: int
+    client_tts_start_ms: int
+
+@app.post("/api/metrics/tts_start")
+def api_tts_start(mark: TTSMark):
+    """Record TTS start for end-to-end latency calculation"""
+    paths = _log_paths(mark.provider)
+    _ensure_headers(paths)
+    
+    e2e = int(mark.client_tts_start_ms) - int(mark.client_start_ms)
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(mark.session_id, mark.provider)
+    if enabled:
+        with open(paths["latency"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                mark.site_id, run_id, datetime.utcnow().isoformat(),
+                mark.req_id, mark.session_id, mark.provider,
+                "trial",  # phase: trial phase for subsequent photos
+                mark.client_start_ms, mark.client_tts_start_ms, e2e
+            ])
+    
+    print(f"📊 TTS start recorded: req_id={mark.req_id}, e2e={e2e}ms, logging={enabled}")
+    return {"ok": True, "e2e_latency_ms": e2e}
+
+# ✅ New: Logging control API endpoints
+class LogSwitchIn(BaseModel):
+    session_id: str
+    provider: str = "ft"
+    enabled: bool
+    run_id: str = ""     # Optional, keep previous if not provided
+
+@app.post("/api/logging/set")
+def api_logging_set(body: LogSwitchIn):
+    """Set logging record switch"""
+    key = (body.session_id, body.provider.lower())
+    cur = LOG_SWITCH[key]
+    cur["enabled"] = bool(body.enabled)
+    if body.run_id:
+        cur["run_id"] = body.run_id
+    
+    status = "ON" if cur["enabled"] else "OFF"
+    run_id_info = f" (run_id: {cur['run_id']})" if cur["run_id"] else ""
+    print(f"🔧 Logging {status} for session={body.session_id}, provider={body.provider}{run_id_info}")
+    
+    return {"ok": True, "state": cur, "key": {"session_id": body.session_id, "provider": body.provider.lower()}}
+
+@app.get("/api/logging/status")
+def api_logging_status(session_id: str, provider: str = "ft"):
+    """Query logging record status"""
+    st = LOG_SWITCH[(session_id, provider.lower())]
+    return {"ok": True, "state": st}
+
+# ✅ 新增：RQ3 澄清对话管理端点
+class ClarificationRound(BaseModel):
+    clarification_id: str
+    session_id: str
+    site_id: str
+    round_count: int
+    user_question: str
+    system_answer: str
+    predicted_node: str
+    gt_node_id: str = None
+
+@app.post("/api/metrics/clarification_round")
+def api_clarification_round(round_data: ClarificationRound):
+    """Record a clarification dialogue round"""
+    record_clarification_round(
+        round_data.clarification_id,
+        round_data.session_id,
+        round_data.site_id,
+        round_data.round_count,
+        round_data.user_question,
+        round_data.system_answer,
+        round_data.predicted_node,
+        round_data.gt_node_id
+    )
+    
+    print(f"🔍 Clarification round recorded: {round_data.clarification_id}, round {round_data.round_count}")
+    return {"ok": True, "round_recorded": round_data.round_count}
+
+class ClarificationEnd(BaseModel):
+    clarification_id: str
+    session_id: str
+    site_id: str
+    total_rounds: int
+    final_predicted_node: str
+    gt_node_id: str
+
+@app.post("/api/metrics/clarification_end")
+def api_clarification_end(end_data: ClarificationEnd):
+    """End a clarification session and record success rate"""
+    end_clarification_session(
+        end_data.clarification_id,
+        end_data.session_id,
+        end_data.site_id,
+        end_data.total_rounds,
+        end_data.final_predicted_node,
+        end_data.gt_node_id
+    )
+    
+    return {"ok": True, "session_ended": end_data.clarification_id}
+
+# ✅ 新增：RQ3 错误恢复管理端点
+class ErrorRecoveryStart(BaseModel):
+    session_id: str
+    site_id: str
+    error_node: str
+    correct_node: str
+
+@app.post("/api/metrics/error_recovery_start")
+def api_error_recovery_start(recovery_data: ErrorRecoveryStart):
+    """Start error recovery timing"""
+    recovery_id = start_error_recovery(
+        recovery_data.session_id,
+        recovery_data.site_id,
+        recovery_data.error_node,
+        recovery_data.correct_node
+    )
+    
+    return {"ok": True, "recovery_id": recovery_id}
+
+class ErrorRecoveryEnd(BaseModel):
+    recovery_id: str
+    session_id: str
+    site_id: str
+    correct_node: str
+    recovery_path: str = ""
+
+@app.post("/api/metrics/error_recovery_end")
+def api_error_recovery_end(recovery_data: ErrorRecoveryEnd):
+    """End error recovery timing and calculate duration"""
+    duration = end_error_recovery(
+        recovery_data.recovery_id,
+        recovery_data.session_id,
+        recovery_data.site_id,
+        recovery_data.correct_node,
+        recovery_data.recovery_path
+    )
+    
+    return {"ok": True, "recovery_duration_ms": duration}
+
+SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+class StartIn(BaseModel):
+    session_id: str
+    site_id: str               # SCENE_A_MS / SCENE_B_STUDIO
+    opening_provider: str      # base / ft
+    lang: str = "en"           # en / zh
+
+@app.post("/api/start")
+def api_start(body: StartIn):
+    SESSIONS[body.session_id] = {"site_id": body.site_id, "opening_provider": body.opening_provider, "lang": body.lang}
+    
+    # 🔧 Reset photo count for this session
+    session_key = f"{body.session_id}_{body.opening_provider}_{body.site_id}"
+    if "_photo_count" not in SESSIONS:
+        SESSIONS["_photo_count"] = {}
+    SESSIONS["_photo_count"][session_key] = 0
+    print(f"🔄 Reset photo count for session {session_key}")
+    
+    table = HARD_OUTPUTS_EN if body.lang=="en" else HARD_OUTPUTS_ZH
+    say = table[body.site_id][body.opening_provider]
+    return {"mode":"orient","say":[say],"site_id":body.site_id,"opening_provider":body.opening_provider,"lang":body.lang}
+
+@app.post("/api/locate")
+async def api_locate(
+    site_id: str = Form(...),
+    image: UploadFile = File(...),
+    session_id: str = Form("T1"),      # Allow session_id, default T1
+    provider: str = Form("ft"),        # Frontend can pass (or get from session)
+    gt_node_id: str = Form(None),      # ✅ New: ground truth label (optional)
+    client_start_ms: int = Form(None), # ✅ New: client start timestamp
+    req_id: str = Form(None),          # ✅ New: request ID for tracking
+    first_photo: bool = Form(False)    # ✅ New: whether this is the first photo
+):
+    # Generate request ID if not provided
+    req_id = req_id or str(uuid.uuid4())
+    server_recv_ms = _now_ms()
+    
+    print(f"🔍 API locate called: site_id={site_id}, provider={provider}, first_photo={first_photo}, session_id={session_id}")
+    
+    # ✅ Check if this is the first photo
+    if first_photo:
+        print(f"📸 First photo detected for {provider}_{site_id}")
+        
+        # First photo: return traditional preset output from JSONL files
+        try:
+            # Get image and generate BLIP caption for logging purposes only
+            img = await image.read()
+            cap = hf_caption(img)
+            print(f"📸 BLIP caption for first photo (logging only): {cap[:100]}...")
+            
+            # 🔧 FIXED: Use traditional preset output for first photo, not AI reasoning
+            preset_output = get_preset_output(provider, site_id)
+            print(f"📚 First photo preset output for {provider}_{site_id}: {preset_output[:100]}...")
+        except Exception as e:
+            print(f"⚠️ Failed to get preset output, using fallback: {e}")
+            # Fall back to simple welcome message
+            preset_output = f"Welcome to {site_id}! Please take a photo to start exploring."
+            print(f"📚 Fallback preset output: {preset_output}")
+        
+        # 🔧 Record warmup phase (first photo) for tracking
+        paths = _log_paths(provider)
+        _ensure_headers(paths)
+        
+        # Always log warmup phase, regardless of logging switch
+        with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, "WARMUP", datetime.utcnow().isoformat(), req_id, session_id, provider,
+                "warmup",  # phase
+                "First photo - preset output",  # caption
+                "", "", "", "", "",  # top1, top2, margin
+                "", "", "", "",  # gt_node_id, hit_top1, hit_top2, hit_hop1
+                "", "",  # low_conf, low_conf_rule
+                client_start_ms or "", server_recv_ms, _now_ms()  # timing
+            ])
+        
+        print(f"📝 Warmup phase logged for {provider}_{site_id}")
+        
+        return {
+            "req_id": req_id,
+            "caption": cap if 'cap' in locals() else "First photo - preset output",
+            "node_id": None,
+            "confidence": 1.0,
+            "low_conf": False,
+            "preset_output": preset_output,
+            "is_first_photo": True,
+            "retrieval_method": "preset_output"
+        }
+    
+            # 🔧 FORCE FIRST PHOTO DETECTION: If this is a new session, treat as first photo
+        session_key = f"{session_id}_{provider}_{site_id}"
+        if session_key not in SESSIONS.get("_photo_count", {}):
+            if "_photo_count" not in SESSIONS:
+                SESSIONS["_photo_count"] = {}
+            SESSIONS["_photo_count"][session_key] = 0
+        
+        photo_count = SESSIONS["_photo_count"][session_key]
+        if photo_count == 0:
+            print(f"🔧 FORCE DETECTION: First photo for session {session_key}")
+            SESSIONS["_photo_count"][session_key] = 1
+            
+            # First photo: return traditional preset output from JSONL files
+            try:
+                # Get image and generate BLIP caption for logging purposes only
+                img = await image.read()
+                cap = hf_caption(img)
+                print(f"📸 BLIP caption for first photo (logging only): {cap[:100]}...")
+                
+                # 🔧 FIXED: Use traditional preset output for first photo, not AI reasoning
+                preset_output = get_preset_output(provider, site_id)
+                print(f"📚 First photo preset output for {provider}_{site_id}: {preset_output[:100]}...")
+            except Exception as e:
+                print(f"⚠️ Failed to get preset output, using fallback: {e}")
+                # Fall back to simple welcome message
+                preset_output = f"Welcome to {site_id}! Please take a photo to start exploring."
+                print(f"📚 Fallback preset output: {preset_output}")
+            
+            # 🔧 Record warmup phase (first photo) for tracking
+            paths = _log_paths(provider)
+            _ensure_headers(paths)
+            
+            # Always log warmup phase, regardless of logging switch
+            with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    site_id, "WARMUP", datetime.utcnow().isoformat(), req_id, session_id, provider,
+                    "warmup",  # phase
+                    "First photo - preset output",  # caption
+                    "", "", "", "", "",  # top1, top2, margin
+                    "", "", "", "",  # gt_node_id, hit_top1, hit_top2, hit_hop1
+                    "", "", "", "",  # low_conf, low_conf_rule
+                    client_start_ms or "", server_recv_ms, _now_ms()  # timing
+                ])
+            
+            print(f"📝 Warmup phase logged for {provider}_{site_id}")
+            
+            return {
+                "req_id": req_id,
+                "caption": cap if 'cap' in locals() else "First photo - preset output",
+                "node_id": None,
+                "confidence": 1.0,
+                "low_conf": False,
+                "preset_output": preset_output,
+                "is_first_photo": True,
+                "retrieval_method": "preset_output"
+            }
+    
+    # 1) Get image → BLIP generate caption (for subsequent photos)
+    try:
+        img = await image.read()
+        cap = hf_caption(img)
+    except Exception as e:
+        # Log failure
+        # paths is already initialized above
+        
+        # ✅ Only write when logging is enabled
+        enabled, run_id = _is_logging(session_id, provider)
+        if enabled:
+            with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
+                    f"BLIP_FAILED:{e}", "", "", "", "", "", gt_node_id or "", "", "", "",
+                    True, f"BLIP_failed:{e}", client_start_ms or "", server_recv_ms, _now_ms()
+                ])
+        raise HTTPException(status_code=400, detail=f"BLIP failed: {e}")
+    
+    # 🔧 Increment photo count for this session
+    SESSIONS["_photo_count"][session_key] += 1
+    print(f"📸 Photo #{SESSIONS['_photo_count'][session_key]} for session {session_key}")
+    
+    # 2) Try unified dual-channel retrieval first
+    # Initialize paths early to avoid UnboundLocalError
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+    
+    retriever = get_unified_retriever()
+    if retriever:
+        try:
+            # ✅ Enhanced retrieval for ft mode: combine detailed descriptions with topology
+            if provider.lower() == "ft" and site_id == "SCENE_A_MS":
+                print("🔍 FT mode detected for SCENE_A_MS - using enhanced dual retrieval")
+                
+                # Get both data sources
+                matching_data = get_matching_data(provider, site_id)
+                detailed_data = get_detailed_matching_data(site_id)
+                
+                if matching_data:
+                    print(f"🔍 Using topology data from {PRESET_OUTPUTS.get(f'{provider.lower()}_{site_id}')}")
+                if detailed_data:
+                    print(f"🔍 Using detailed descriptions from SCENE_A_MS_detailed.jsonl")
+                
+                # Enhanced retrieval with combined data sources
+                candidates = enhanced_ft_retrieval(cap, retriever, site_id, detailed_data)
+            else:
+                # Standard retrieval for other modes
+                matching_data = get_matching_data(provider, site_id)
+                if matching_data:
+                    print(f"🔍 Using matching data from {PRESET_OUTPUTS.get(f'{provider.lower()}_{site_id}')}")
+                
+                # Use unified dual-channel retrieval with scene filtering
+                candidates = retriever.retrieve(cap, top_k=10, scene_filter=site_id)
+            
+            if candidates:
+                # Extract scores and calculate confidence metrics
+                top1 = candidates[0]
+                top1_id = top1["id"]
+                top1_score = float(top1["score"])
+                
+                # Get top2 if available
+                top2 = candidates[1] if len(candidates) > 1 else None
+                top2_id = top2["id"] if top2 else ""
+                top2_score = float(top2["score"]) if top2 else 0.0
+                
+                margin = top1_score - top2_score
+                
+                # Determine confidence level using configurable thresholds
+                low_conf = top1_score < LOWCONF_SCORE_TH or margin < LOWCONF_MARGIN_TH
+                low_conf_rule = f"score<{LOWCONF_SCORE_TH}" if top1_score < LOWCONF_SCORE_TH else f"margin<{LOWCONF_MARGIN_TH}"
+                
+                # Calculate hit metrics
+                hit_top1 = (gt_node_id == top1_id) if gt_node_id else ""
+                hit_top2 = (gt_node_id in [top1_id, top2_id]) if gt_node_id and top2_id else ""
+                hit_hop1 = is_hop1(site_id, top1_id, gt_node_id) if gt_node_id else ""
+                
+                # ✅ New: RQ3 misbelief rate calculation
+                misbelief = 0
+                clarification_triggered = False
+                if gt_node_id and top1_id != gt_node_id:
+                    # If prediction is wrong, check if clarification dialogue is triggered
+                    clarification_triggered = low_conf
+                    misbelief = 1 if not clarification_triggered else 0
+                
+                # If clarification dialogue is triggered, start clarification session
+                clarification_id = None
+                if low_conf and gt_node_id:
+                    clarification_id = start_clarification_session(
+                        session_id, site_id, req_id, top1_id, gt_node_id, provider
+                    )
+                
+                # Extract bearing from caption
+                bearing = "ahead"
+                t = cap.lower()
+                if "left" in t: bearing = "left"
+                elif "right" in t: bearing = "right"
+                elif "behind" in t or "back" in t: bearing = "behind"
+                
+                # ✅ Detect language from caption and provider
+                detected_lang = detect_language_from_caption(cap, provider)
+                
+                # ✅ Generate dynamic navigation response based on current location
+                navigation_response = generate_dynamic_navigation_response(
+                    site_id, top1_id, top1_score, low_conf, matching_data, detected_lang
+                )
+                
+                # Format response with detailed scoring and navigation
+                response = {
+                    "req_id": req_id,
+                    "caption": cap,
+                    "node_id": top1_id,
+                    "confidence": top1_score,
+                    "low_conf": low_conf,
+                    "bearing": bearing,
+                    "margin": margin,
+                    "clarification_id": clarification_id,  # ✅ New: clarification session ID
+                    "navigation_instruction": navigation_response,  # ✅ New: dynamic navigation instruction
+                    "current_location": get_location_description(top1_id, site_id, detected_lang),  # ✅ New: current location description
+                    "next_action": get_next_action(top1_id, site_id, detected_lang),  # ✅ New: next action instruction
+                    "candidates": [
+                        {
+                            "id": c["id"],
+                            "score": float(c["score"]),  # ✅ Convert numpy types to Python native types
+                            "s_nl": float(c["score_nl"]),
+                            "s_struct": float(c["score_struct"]),
+                            "provider": c["provider"],
+                            "bonus_keywords": float(c["bonus_keywords"]),
+                            "bonus_bearing": float(c["bonus_bearing"]),
+                            "alpha_used": float(c["alpha_used"]),
+                            "retrieval_method": c.get("retrieval_method", "unknown"),  # ✅ New: retrieval method info
+                            "detailed_match_score": c.get("detailed_match_score", None)  # ✅ New: detailed matching score
+                        }
+                        for c in candidates[:10]
+                    ],
+                    "retrieval_method": "enhanced_ft_dual_retrieval" if provider.lower() == "ft" and site_id == "SCENE_A_MS" else "unified_dual_channel_fusion"
+                }
+                
+                # Write comprehensive log with RQ3 data
+                server_resp_ms = _now_ms()
+                
+                # ✅ Only write when logging is enabled
+                enabled, run_id = _is_logging(session_id, provider)
+                if enabled:
+                    with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+                        csv.writer(f).writerow([
+                            site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
+                            "trial",  # phase: trial phase for subsequent photos
+                            cap,
+                            top1_id, f"{top1_score:.6f}",
+                            top2_id, f"{top2_score:.6f}",
+                            f"{margin:.6f}",
+                            gt_node_id or "",
+                            str(hit_top1).lower(), str(hit_top2).lower(), str(hit_hop1).lower(),
+                            str(low_conf).lower(), low_conf_rule if low_conf else "",
+                            client_start_ms or "", server_recv_ms, server_resp_ms
+                        ])
+                    
+                    print(f"📝 Trial phase logged to {paths['locate']} (run_id: {run_id})")
+                else:
+                    print(f"📝 Logging disabled for session={session_id}, provider={provider}")
+                
+                print(f"✓ Unified dual-channel retrieval successful for {site_id}")
+                print(f"  Top candidate: {top1['text'][:50]}... (score: {top1_score:.3f})")
+                print(f"  Provider: {top1['provider']}, Alpha: {top1['alpha_used']:.2f}")
+                print(f"  Margin: {margin:.3f}, Low conf: {low_conf}")
+                if gt_node_id:
+                    print(f"  Ground truth: {gt_node_id}")
+                    print(f"  Hit Top1: {hit_top1}, Hit Top2: {hit_top2}, Hit ±1-Hop: {hit_hop1}")
+                    print(f"  Misbelief: {misbelief}, Clarification: {clarification_triggered}")
+                    if clarification_id:
+                        print(f"  Clarification session: {clarification_id}")
+                
+                return response
+            else:
+                # No candidates found
+                server_resp_ms = _now_ms()
+                
+                # ✅ Only write when logging is enabled
+                enabled, run_id = _is_logging(session_id, provider)
+                if enabled:
+                    with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+                        csv.writer(f).writerow([
+                            site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
+                            cap,
+                            "", "0.0",
+                            "", "0.0",
+                            "0.0",
+                            gt_node_id or "",
+                            "", "", "",
+                            "true", "no_candidates",
+                            client_start_ms or "", server_recv_ms, server_resp_ms
+                        ])
+                
+                return {
+                    "req_id": req_id,
+                    "caption": cap,
+                    "node_id": None,
+                    "confidence": 0.0,
+                    "low_conf": True,
+                    "candidates": [],
+                    "retrieval_method": "unified_dual_channel_fusion"
+                }
+                
+        except Exception as e:
+            print(f"⚠ Unified dual-channel retrieval failed: {e}")
+            print("⚠ Falling back to legacy retrieval")
+    
+    # Fallback to legacy retrieval
+    print("Using legacy retrieval system")
+    from sentence_transformers import SentenceTransformer
+    def embed_text(t: str):
+        return EMB.encode([t], normalize_embeddings=True, convert_to_numpy=True)[0].astype(np.float32).reshape(1,-1)
+    item = SCENE[site_id]
+    v = embed_text(cap)
+    if "faiss" in str(type(item["index"])).lower():
+        D, I = item["index"].search(v, 4)
+        sims, idxs = D[0].tolist(), I[0].tolist()
+    else:
+        D, I = item["index"].kneighbors(v, n_neighbors=4, return_distance=True)
+        sims = (1 - D[0]).tolist(); idxs = I[0].tolist()
+    cands = []
+    for s,i in zip(sims,idxs):
+        meta = item["ids"][i]
+        cands.append({"id": meta["id"], "type": meta["type"], "text": meta["text"], "score": float(s)})
+    
+    # Calculate confidence metrics for legacy system
+    top1_score = cands[0]["score"] if cands else 0.0
+    top2_score = cands[1]["score"] if len(cands) > 1 else 0.0
+    margin = top1_score - top2_score
+    low_conf = (len(cands)==0) or (top1_score < LOWCONF_SCORE_TH) or (margin < LOWCONF_MARGIN_TH)
+    low_conf_rule = f"score<{LOWCONF_SCORE_TH}" if top1_score < LOWCONF_SCORE_TH else f"margin<{LOWCONF_MARGIN_TH}"
+    
+    # Calculate hit metrics for legacy system
+    top1_id = cands[0]["id"] if cands else ""
+    top2_id = cands[1]["id"] if len(cands) > 1 else ""
+    hit_top1 = (gt_node_id == top1_id) if gt_node_id else ""
+    hit_top2 = (gt_node_id in [top1_id, top2_id]) if gt_node_id and top2_id else ""
+    hit_hop1 = is_hop1(site_id, top1_id, gt_node_id) if gt_node_id else ""
+    
+    bearing = "ahead"
+    t = cap.lower()
+    if "left" in t: bearing = "left"
+    elif "right" in t: bearing = "right"
+    elif "behind" in t or "back" in t: bearing = "behind"
+    
+    # Write comprehensive log for legacy system
+    server_resp_ms = _now_ms()
+    
+    # ✅ Only write when logging is enabled
+    enabled, run_id = _is_logging(session_id, provider)
+    if enabled:
+        with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
+                cap,
+                top1_id, f"{top1_score:.6f}",
+                top2_id, f"{top2_score:.6f}",
+                f"{margin:.6f}",
+                gt_node_id or "",
+                str(hit_top1).lower(), str(hit_top2).lower(), str(hit_hop1).lower(),
+                str(low_conf).lower(), low_conf_rule if low_conf else "",
+                client_start_ms or "", server_recv_ms, server_resp_ms
+            ])
+    
+    return {
+        "req_id": req_id,
+        "caption": cap, 
+        "node_id": top1_id, 
+        "confidence": top1_score,
+        "low_conf": low_conf,
+        "bearing": bearing, 
+        "margin": margin,
+        "candidates": cands,
+        "retrieval_method": "legacy_fallback"
+    }
+
+@app.post("/api/asr")
+async def api_asr(audio: UploadFile = File(...)):
+    try:
+        b = await audio.read()
+        print(f"Received audio file: {audio.filename}, size: {len(b)} bytes")
+        
+        if not b or len(b) == 0:
+            print("Empty audio file received")
+            return {"text": "", "error": "empty_audio"}
+        
+        # Check file size (reasonable limit: 10MB)
+        if len(b) > 10 * 1024 * 1024:
+            print(f"Audio file too large: {len(b)} bytes")
+            return {"text": "", "error": "file_too_large"}
+        
+        text = asr_bytes_to_text(b)
+        if not text.strip():
+            print("No speech detected in audio")
+            return {"text": "", "error": "no_speech"}
+        
+        print(f"ASR successful: '{text}'")
+        return {"text": text}
+        
+    except Exception as e:
+        print(f"ASR API error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"text": "", "error": f"asr_error: {str(e)}"}
+
+class QAIn(BaseModel):
+    session_id: str
+    text: str
+    lang: str = "en"
+
+def generate_navigation_context(site_id: str, lang: str = "en") -> str:
+    """Generate dynamic navigation context based on current site and language"""
+    if site_id == "SCENE_A_MS":
+        if lang == "zh":
+            return """你是一个室内导航助手，专门帮助用户在 Maker Space 中导航。
+
+当前位置：Maker Space 入口内侧
+可用地标：
+- 中庭：直行约6步，约4米
+- 二维码书架：在你身后
+- 黑色抽屉墙：在你的右侧
+- 纸箱障碍：第5步附近，需要减速绕行
+
+用户可以通过拍照来更新当前位置信息。"""
+        else:
+            return """You are an indoor navigation assistant, specifically helping users navigate in the Maker Space.
+
+Current location: Inside the Maker Space entrance
+Available landmarks:
+- Atrium: Walk straight about 6 steps, roughly 4 meters
+- QR-code bookshelf: Behind you
+- Black drawer wall: To your right
+- Box hazard: Near step 5, slow down and bypass
+
+Users can take photos to update their current location information."""
+    
+    elif site_id == "SCENE_B_STUDIO":
+        if lang == "zh":
+            return """你是一个室内导航助手，专门帮助用户在工作室内导航。
+
+当前位置：工作室入口
+可用地标：
+- 大窗：向前5步，约3.5米
+- 橙色沙发旁的椅子：左转后走5步，约3.5米
+- 地面电缆：第3步附近，需要减速
+
+用户可以通过拍照来更新当前位置信息。"""
+        else:
+            return """You are an indoor navigation assistant, specifically helping users navigate in the studio.
+
+Current location: Studio entrance
+Available landmarks:
+- Large window: Walk forward 5 steps, roughly 3.5 meters
+- Chair beside orange sofa: Turn left and walk 5 steps, roughly 3.5 meters
+- Floor cable: Near step 3, slow down
+
+Users can take photos to update their current location information."""
+    
+    else:
+        if lang == "zh":
+            return "你是一个室内导航助手，可以帮助用户进行室内导航。请根据用户的问题提供清晰的指导。"
+        else:
+            return "You are an indoor navigation assistant that can help users with indoor navigation. Please provide clear guidance based on user questions."
+
+@app.post("/api/qa")
+async def api_qa(body: QAIn):
+    """Dynamic QA using GPT with navigation context"""
+    try:
+        sess = SESSIONS.get(body.session_id, {})
+        site_id = sess.get("site_id", "SCENE_A_MS")
+        lang = "zh" if body.lang.lower().startswith("zh") else "en"
+        
+        print(f"QA request: session={body.session_id}, site={site_id}, lang={lang}, text='{body.text}'")
+        
+        # Generate navigation context based on current site and language
+        context = generate_navigation_context(site_id, lang)
+        
+        # Create prompt for GPT
+        if lang == "zh":
+            prompt = f"""{context}
+
+用户问题：{body.text}
+
+请根据当前场景和位置信息，为用户提供清晰的导航指导。回答要简洁明了，适合语音播报。"""
+        else:
+            prompt = f"""{context}
+
+User question: {body.text}
+
+Please provide clear navigation guidance based on the current scene and location information. Keep your answer concise and suitable for voice output."""
+        
+        print(f"GPT prompt: {prompt}")
+        
+        # Call GPT for dynamic response
+        response = OAI.chat.completions.create(
+            model=LLM_MODEL,
+            temperature=LLM_TEMP,
+            messages=[
+                {"role": "system", "content": "You are a helpful indoor navigation assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=150  # Limit response length for voice output
+        )
+        
+        answer = response.choices[0].message.content.strip()
+        print(f"GPT response: {answer}")
+        
+        # Return response in the same format as before
+        return {
+            "mode": "qa",
+            "say": [answer],
+            "meta": {"source": "gpt", "site_id": site_id, "lang": lang},
+            "source": "gpt"
+        }
+        
+    except Exception as e:
+        print(f"QA API error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Fallback response
+        if lang == "zh":
+            fallback = "抱歉，我现在无法回答您的问题。请稍后再试。"
+        else:
+            fallback = "Sorry, I cannot answer your question right now. Please try again later."
+        
+        return {
+            "mode": "qa",
+            "say": [fallback],
+            "meta": {"source": "error", "error": str(e)},
+            "source": "error"
+        }
+
+# Startup instructions (execute in project root directory):
+# uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000
+
+# ✅ New: Language Detection and Dynamic Navigation Functions
+def detect_language_from_caption(caption: str, provider: str) -> str:
+    """Detect language from caption text and provider type"""
+    caption_lower = caption.lower()
+    
+    # Check for Chinese characters in caption
+    chinese_chars = ['的', '在', '有', '和', '与', '是', '了', '到', '从', '向', '上', '下', '左', '右', '前', '后']
+    if any(char in caption for char in chinese_chars):
+        return "zh"
+    
+    # Check for common English words
+    english_words = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by']
+    if any(word in caption_lower for word in english_words):
+        return "en"
+    
+    # Default based on provider (ft mode often uses Chinese, base mode often uses English)
+    if provider.lower() == "ft":
+        return "zh"  # Default to Chinese for ft mode
+    else:
+        return "en"  # Default to English for base mode
+
+def generate_dynamic_navigation_response(site_id: str, node_id: str, confidence: float, low_conf: bool, matching_data: dict, lang: str = "en") -> str:
+    """Generate dynamic navigation response based on current location and confidence"""
+    if not node_id or low_conf:
+        if lang == "zh":
+            return "位置识别置信度较低，请重新拍照确认当前位置。"
+        else:
+            return "Location recognition confidence is low. Please take another photo to confirm your current position."
+    
+    if site_id == "SCENE_A_MS":
+        return generate_scene_a_navigation(node_id, confidence, matching_data, lang)
+    elif site_id == "SCENE_B_STUDIO":
+        return generate_scene_b_navigation(node_id, confidence, matching_data, lang)
+    else:
+        if lang == "zh":
+            return "当前位置已识别，请告诉我您需要去哪里。"
+        else:
+            return "Current location identified. Please tell me where you need to go."
+    
+def generate_scene_a_navigation(node_id: str, confidence: float, matching_data: dict, lang: str = "en") -> str:
+    """Generate navigation instructions for SCENE_A_MS based on current location"""
+    
+    if lang == "zh":
+        # 中文导航指令
+        if node_id == "dp_ms_entrance":
+            return "您在Maker Space入口。直行约4步到达3D打印机桌，然后左转继续前进。"
+        
+        elif node_id == "poi_3d_printer_table":
+            return "您在3D打印机桌旁。左转约2步到达Ultimaker打印机行，然后继续前进。"
+        
+        elif node_id == "poi_ultimaker_row":
+            return "您在Ultimaker打印机行。左转约2步到达大型黑色橙色3D打印机。"
+        
+        elif node_id == "poi_orange_printer":
+            return "您在大型黑色橙色3D打印机旁。右转约2步到达中央岛工作台。"
+        
+        elif node_id == "poi_central_island":
+            return "您在中央岛工作台。左转约3步到达电子工作台。"
+        
+        elif node_id == "poi_electronics_bench":
+            return "您在电子工作台旁。向后约6步到达展示柜，然后右转2步到玻璃门。"
+        
+        elif node_id == "poi_showcase_cabinet":
+            return "您在展示柜旁。右转约2步到达玻璃门，然后直行进入中庭。"
+        
+        elif node_id == "dp_glass_doors":
+            return "您在玻璃门前。直行约2步进入中庭。"
+        
+        elif node_id == "atrium_entry":
+            return "您已到达中庭入口。导航任务完成！"
+        
+        elif node_id == "poi_component_drawer_wall":
+            return "您在组件抽屉墙旁。直行约3步到达Ultimaker打印机行。"
+        
+        elif node_id == "dp_bookshelf_qr":
+            return "您在二维码书架旁。直行约3步到达3D打印机桌。"
+        
+        else:
+            return f"您当前在{node_id}位置。请告诉我您需要去哪里，我会为您提供具体的导航指导。"
+    
+    else:
+        # 英文导航指令
+        if node_id == "dp_ms_entrance":
+            return "You are at the Maker Space entrance. Walk straight about 4 steps to reach the 3D printer table, then turn left to continue."
+        
+        elif node_id == "poi_3d_printer_table":
+            return "You are at the 3D printer table. Turn left about 2 steps to reach the Ultimaker printer row, then continue forward."
+        
+        elif node_id == "poi_ultimaker_row":
+            return "You are at the Ultimaker printer row. Turn left about 2 steps to reach the large black and orange 3D printer."
+        
+        elif node_id == "poi_orange_printer":
+            return "You are at the large black and orange 3D printer. Turn right about 2 steps to reach the central island workbench."
+        
+        elif node_id == "poi_central_island":
+            return "You are at the central island workbench. Turn left about 3 steps to reach the electronics bench."
+        
+        elif node_id == "poi_electronics_bench":
+            return "You are at the electronics bench. Walk back about 6 steps to reach the showcase cabinet, then turn right 2 steps to the glass doors."
+        
+        elif node_id == "poi_showcase_cabinet":
+            return "You are at the showcase cabinet. Turn right about 2 steps to reach the glass doors, then walk straight into the atrium."
+        
+        elif node_id == "dp_glass_doors":
+            return "You are at the glass doors. Walk straight about 2 steps to enter the atrium."
+        
+        elif node_id == "atrium_entry":
+            return "You have reached the atrium entry. Navigation task completed!"
+        
+        elif node_id == "poi_component_drawer_wall":
+            return "You are at the component drawer wall. Walk straight about 3 steps to reach the Ultimaker printer row."
+        
+        elif node_id == "dp_bookshelf_qr":
+            return "You are at the QR code bookshelf. Walk straight about 3 steps to reach the 3D printer table."
+        
+        else:
+            return f"You are currently at {node_id}. Please tell me where you need to go, and I will provide specific navigation guidance."
+    
+def generate_scene_b_navigation(node_id: str, confidence: float, matching_data: dict, lang: str = "en") -> str:
+    """Generate navigation instructions for SCENE_B_STUDIO based on current location"""
+    
+    if lang == "zh":
+        # 中文导航指令
+        if node_id == "dp_studio_entrance":
+            return "您在工作室入口。直行约5步到达大窗区域。"
+        
+        elif node_id == "poi_large_window":
+            return "您在大窗区域。左转约5步到达橙色沙发旁的椅子。"
+        
+        elif node_id == "poi_orange_sofa_chair":
+            return "您在橙色沙发旁的椅子旁。请告诉我您还需要去哪里。"
+        
+        else:
+            return f"您当前在{node_id}位置。请告诉我您需要去哪里。"
+    
+    else:
+        # 英文导航指令
+        if node_id == "dp_studio_entrance":
+            return "You are at the studio entrance. Walk straight about 5 steps to reach the large window area."
+        
+        elif node_id == "poi_large_window":
+            return "You are at the large window area. Turn left about 5 steps to reach the chair beside the orange sofa."
+        
+        elif node_id == "poi_orange_sofa_chair":
+            return "You are at the chair beside the orange sofa. Please tell me where else you need to go."
+        
+        else:
+            return f"You are currently at {node_id}. Please tell me where you need to go."
+    
+def get_location_description(node_id: str, site_id: str, lang: str = "en") -> str:
+    """Get human-readable description of current location"""
+    if not node_id:
+        if lang == "zh":
+            return "未知位置"
+        else:
+            return "Unknown location"
+    
+    if site_id == "SCENE_A_MS":
+        if lang == "zh":
+            location_descriptions = {
+                "dp_ms_entrance": "Maker Space入口，面向工作台区域",
+                "poi_3d_printer_table": "3D打印机桌，有黑色Ender打印机和橙色装饰",
+                "poi_ultimaker_row": "Ultimaker打印机行，白色打印机发出蓝光",
+                "poi_orange_printer": "大型黑色橙色3D打印机",
+                "poi_central_island": "中央岛工作台，覆盖着3D打印零件",
+                "poi_electronics_bench": "电子工作台，有示波器和各种设备",
+                "poi_showcase_cabinet": "展示柜，展示海报和小工具",
+                "dp_glass_doors": "玻璃门，门上有'Global Disability Innovation Hub'文字",
+                "atrium_entry": "中庭入口，开放空间",
+                "poi_component_drawer_wall": "组件抽屉墙，黑色金属框架带编号标签",
+                "dp_bookshelf_qr": "二维码书架，低矮书架上有二维码海报"
+            }
+        else:
+            location_descriptions = {
+                "dp_ms_entrance": "Maker Space entrance, facing workbench area",
+                "poi_3d_printer_table": "3D printer table with black Ender printer and orange accents",
+                "poi_ultimaker_row": "Ultimaker printer row with blue-lit white printers",
+                "poi_orange_printer": "Large black and orange 3D printer",
+                "poi_central_island": "Central island workbench covered with 3D printed parts",
+                "poi_electronics_bench": "Electronics bench with oscilloscope and equipment",
+                "poi_showcase_cabinet": "Showcase cabinet displaying posters and gadgets",
+                "dp_glass_doors": "Glass doors with 'Global Disability Innovation Hub' text",
+                "atrium_entry": "Atrium entry, open space",
+                "poi_component_drawer_wall": "Component drawer wall with black metal frame and numbered labels",
+                "dp_bookshelf_qr": "QR code bookshelf, low bookshelf with QR code poster"
+            }
+        return location_descriptions.get(node_id, f"位置: {node_id}" if lang == "zh" else f"Location: {node_id}")
+    
+    elif site_id == "SCENE_B_STUDIO":
+        if lang == "zh":
+            location_descriptions = {
+                "dp_studio_entrance": "工作室入口",
+                "poi_large_window": "大窗区域",
+                "poi_orange_sofa_chair": "橙色沙发旁的椅子"
+            }
+        else:
+            location_descriptions = {
+                "dp_studio_entrance": "Studio entrance",
+                "poi_large_window": "Large window area",
+                "poi_orange_sofa_chair": "Chair beside orange sofa"
+            }
+        return location_descriptions.get(node_id, f"位置: {node_id}" if lang == "zh" else f"Location: {node_id}")
+    
+    else:
+        return f"位置: {node_id}" if lang == "zh" else f"Location: {node_id}"
+    
+def get_next_action(node_id: str, site_id: str, lang: str = "en") -> str:
+    """Get next action instruction based on current location"""
+    if not node_id:
+        if lang == "zh":
+            return "请重新拍照确认位置"
+        else:
+            return "Please take another photo to confirm location"
+    
+    if site_id == "SCENE_A_MS":
+        if lang == "zh":
+            next_actions = {
+                "dp_ms_entrance": "直行4步到3D打印机桌，然后左转",
+                "poi_3d_printer_table": "左转2步到Ultimaker打印机行",
+                "poi_ultimaker_row": "左转2步到大型黑色橙色3D打印机",
+                "poi_orange_printer": "右转2步到中央岛工作台",
+                "poi_central_island": "左转3步到电子工作台",
+                "poi_electronics_bench": "向后6步到展示柜，然后右转2步",
+                "poi_showcase_cabinet": "右转2步到玻璃门，然后直行进入中庭",
+                "dp_glass_doors": "直行2步进入中庭",
+                "atrium_entry": "您已到达目的地！",
+                "poi_component_drawer_wall": "直行3步到Ultimaker打印机行",
+                "dp_bookshelf_qr": "直行3步到3D打印机桌"
+            }
+        else:
+            next_actions = {
+                "dp_ms_entrance": "Walk straight 4 steps to 3D printer table, then turn left",
+                "poi_3d_printer_table": "Turn left 2 steps to Ultimaker printer row",
+                "poi_ultimaker_row": "Turn left 2 steps to large black and orange 3D printer",
+                "poi_orange_printer": "Turn right 2 steps to central island workbench",
+                "poi_central_island": "Turn left 3 steps to electronics bench",
+                "poi_electronics_bench": "Walk back 6 steps to showcase cabinet, then turn right 2 steps",
+                "poi_showcase_cabinet": "Turn right 2 steps to glass doors, then walk straight into atrium",
+                "dp_glass_doors": "Walk straight 2 steps into atrium",
+                "atrium_entry": "You have reached your destination!",
+                "poi_component_drawer_wall": "Walk straight 3 steps to Ultimaker printer row",
+                "dp_bookshelf_qr": "Walk straight 3 steps to 3D printer table"
+            }
+        return next_actions.get(node_id, "请告诉我您要去哪里" if lang == "zh" else "Please tell me where you want to go")
+    
+    elif site_id == "SCENE_B_STUDIO":
+        if lang == "zh":
+            next_actions = {
+                "dp_studio_entrance": "直行5步到大窗区域",
+                "poi_large_window": "左转5步到橙色沙发旁的椅子",
+                "poi_orange_sofa_chair": "您已到达目的地！"
+            }
+        else:
+            next_actions = {
+                "dp_studio_entrance": "Walk straight 5 steps to large window area",
+                "poi_large_window": "Turn left 5 steps to chair beside orange sofa",
+                "poi_orange_sofa_chair": "You have reached your destination!"
+            }
+        return next_actions.get(node_id, "请告诉我您要去哪里" if lang == "zh" else "Please tell me where you want to go")
+    
+    else:
+        return "请告诉我您要去哪里" if lang == "zh" else "Please tell me where you want to go"
+
+# ✅ New: AI Spatial Reasoning System to Replace Preset Outputs
+def generate_ai_spatial_reasoning(caption: str, provider: str, site_id: str, matching_data: dict, detailed_data: list = None) -> str:
+    """Generate AI-powered spatial reasoning based on BLIP caption and textmap analysis"""
+    
+    print(f"🔍 generate_ai_spatial_reasoning called with: provider={provider}, site_id={site_id}")
+    
+    # Detect language
+    lang = detect_language_from_caption(caption, provider)
+    print(f"🌐 Detected language: {lang}")
+    
+    # Get spatial context from textmap
+    spatial_context = extract_spatial_context_from_textmap(matching_data, detailed_data, site_id)
+    print(f"📊 Spatial context keys: {list(spatial_context.keys()) if spatial_context else 'None'}")
+    
+    # Generate AI reasoning prompt
+    reasoning_prompt = create_spatial_reasoning_prompt(caption, spatial_context, site_id, lang)
+    print(f"📝 Generated prompt (first 200 chars): {reasoning_prompt[:200]}...")
+    
+    # Use AI to generate spatial reasoning (simulated for now)
+    ai_reasoning = simulate_ai_spatial_reasoning(reasoning_prompt, lang)
+    print(f"🤖 Final AI reasoning output: {ai_reasoning[:100]}...")
+    
+    return ai_reasoning
+
+def extract_spatial_context_from_textmap(matching_data: dict, detailed_data: list, site_id: str) -> dict:
+    """Extract spatial context from textmap data"""
+    context = {
+        "topology": {},
+        "landmarks": {},
+        "spatial_relationships": {},
+        "navigation_policy": {},
+        "current_environment": {}
+    }
+    
+    if matching_data:
+        # Extract topology information
+        if "topology" in matching_data:
+            context["topology"] = matching_data["topology"]
+        
+        # Extract landmarks
+        if "landmarks" in matching_data:
+            context["landmarks"] = matching_data["landmarks"]
+        
+        # Extract navigation policy
+        if "navigation_policy" in matching_data:
+            context["navigation_policy"] = matching_data["navigation_policy"]
+    
+    if detailed_data and site_id == "SCENE_A_MS":
+        # Extract detailed spatial information
+        context["detailed_descriptions"] = []
+        for item in detailed_data:
+            if "nl_text" in item and "struct_text" in item:
+                context["detailed_descriptions"].append({
+                    "id": item["id"],
+                    "natural_language": item["nl_text"],
+                    "structured": item["struct_text"]
+                })
+    
+    return context
+
+def create_spatial_reasoning_prompt(caption: str, spatial_context: dict, site_id: str, lang: str) -> str:
+    """Create AI prompt for spatial reasoning"""
+    
+    if lang == "zh":
+        prompt = f"""你是一个专业的空间推理AI助手。基于以下信息，为用户提供智能的空间分析和导航指导：
+
+**用户拍摄的图像描述**: {caption}
+
+**当前场景**: {site_id}
+
+**空间拓扑信息**: {json.dumps(spatial_context.get('topology', {}), ensure_ascii=False, indent=2)}
+
+**地标信息**: {json.dumps(spatial_context.get('landmarks', {}), ensure_ascii=False, indent=2)}
+
+**导航策略**: {json.dumps(spatial_context.get('navigation_policy', {}), ensure_ascii=False, indent=2)}
+
+请基于以上信息进行空间推理，并给出：
+1. 当前位置分析
+2. 周围环境描述
+3. 可用的导航选项
+4. 下一步行动建议
+
+回答要简洁明了，适合语音播报。"""
+    else:
+        prompt = f"""You are a professional spatial reasoning AI assistant. Based on the following information, provide intelligent spatial analysis and navigation guidance for the user:
+
+**User's Image Description**: {caption}
+
+**Current Scene**: {site_id}
+
+**Spatial Topology**: {json.dumps(spatial_context.get('topology', {}), indent=2)}
+
+**Landmark Information**: {json.dumps(spatial_context.get('landmarks', {}), indent=2)}
+
+**Navigation Policy**: {json.dumps(spatial_context.get('navigation_policy', {}), indent=2)}
+
+Please perform spatial reasoning based on the above information and provide:
+1. Current location analysis
+2. Surrounding environment description
+3. Available navigation options
+4. Next action recommendations
+
+Keep your answer concise and suitable for voice output."""
+    
+    return prompt
+
+def simulate_ai_spatial_reasoning(prompt: str, lang: str) -> str:
+    """Simulate AI spatial reasoning (placeholder for actual AI integration)"""
+    
+    # This is a simulation - in production, you would call an actual AI service
+    # For now, we'll use intelligent rule-based reasoning
+    
+    # 🔧 FIXED: More precise scene detection using regex pattern matching
+    import re
+    
+    # Extract scene_id from the prompt more precisely
+    scene_match = re.search(r'\*\*当前场景\*\*:\s*(\w+)|Current Scene.*?:\s*(\w+)', prompt)
+    if scene_match:
+        detected_scene = scene_match.group(1) or scene_match.group(2)
+        print(f"🔍 Detected scene from prompt: {detected_scene}")
+    else:
+        # Fallback: check if prompt contains scene information
+        if "SCENE_A_MS" in prompt and "SCENE_B_STUDIO" not in prompt:
+            detected_scene = "SCENE_A_MS"
+        elif "SCENE_B_STUDIO" in prompt and "SCENE_A_MS" not in prompt:
+            detected_scene = "SCENE_B_STUDIO"
+        else:
+            # Default to SCENE_A_MS if ambiguous
+            detected_scene = "SCENE_A_MS"
+            print(f"⚠️ Ambiguous scene detection, defaulting to: {detected_scene}")
+    
+    print(f"🎯 Final scene determination: {detected_scene}")
+    
+    if detected_scene == "SCENE_A_MS":
+        if lang == "zh":
+            return """基于您的照片和空间分析，我识别出您当前在Maker Space环境中。
+
+**空间分析**：
+- 您位于一个现代化的制造创新工作空间
+- 周围有3D打印设备、工作台和存储系统
+- 空间布局开放，便于协作和制作
+
+**环境特征**：
+- 明亮的照明系统
+- 工业风格的天花板，暴露的管道和装置
+- 灰色乙烯基地板，带有黄色线条标记活动区域
+
+**可用导航选项**：
+1. 向前直行约4步到达3D打印机桌
+2. 右转约2步到达组件抽屉墙
+3. 左转约2步到达二维码书架区域
+
+**建议行动**：根据您的目标，我建议先直行到3D打印机桌，那里是空间的核心工作区域。"""
+        else:
+            return """Based on your photo and spatial analysis, I've identified that you're currently in a Maker Space environment.
+
+**Spatial Analysis**:
+- You're located in a modern manufacturing and innovation workspace
+- Surrounded by 3D printing equipment, workbenches, and storage systems
+- Open space layout conducive to collaboration and fabrication
+
+**Environmental Features**:
+- Bright lighting system
+- Industrial-style ceiling with exposed pipes and fixtures
+- Gray vinyl flooring with yellow lines marking activity areas
+
+**Available Navigation Options**:
+1. Walk straight forward about 4 steps to reach the 3D printer table
+2. Turn right about 2 steps to reach the component drawer wall
+3. Turn left about 2 steps to reach the QR code bookshelf area
+
+**Recommended Action**: Based on your goal, I suggest walking straight to the 3D printer table, which is the core work area of the space."""
+    
+    elif detected_scene == "SCENE_B_STUDIO":
+        if lang == "zh":
+            return """基于您的照片和空间分析，我识别出您当前在工作室工作环境中。
+
+**空间分析**：
+- 您位于一个多功能工作和会议环境
+- 结合了办公、研发和休闲区域
+- 空间布局灵活，支持创意协作
+
+**环境特征**：
+- 大落地窗让阳光充足
+- 独特设计的绿色和蓝绿色休闲椅
+- 多显示器工作站和办公椅
+
+**可用导航选项**：
+1. 向前直行约5步到达大窗区域
+2. 左转约5步到达橙色沙发旁的椅子
+3. 直行约3步到达工作室中央区域
+
+**建议行动**：根据您的目标，我建议先向前直行到大窗区域，那里视野开阔，适合观察和思考。"""
+        else:
+            return """Based on your photo and spatial analysis, I've identified that you're currently in a studio workspace environment.
+
+**Spatial Analysis**:
+- You're located in a multifunctional work and meeting environment
+- Combines office, research and development, and leisure areas
+- Flexible space layout supporting creative collaboration
+
+**Environmental Features**:
+- Large floor-to-ceiling windows allowing abundant sunlight
+- Uniquely designed green and teal lounge chairs
+- Multi-monitor workstations and office chairs
+
+**Available Navigation Options**:
+1. Walk straight forward about 5 steps to reach the large window area
+2. Turn left about 5 steps to reach the chair beside the orange sofa
+3. Walk straight about 3 steps to reach the central studio area
+
+**Recommended Action**: Based on your goal, I suggest walking straight forward to the large window area, which offers an open view and is ideal for observation and reflection."""
+    
+    else:
+        print(f"⚠️ Unknown scene detected: {detected_scene}, using default response")
+        if lang == "zh":
+            return "基于您的照片，我正在分析当前空间环境。请稍等，我将为您提供详细的空间分析和导航指导。"
+        else:
+            return "Based on your photo, I'm analyzing the current spatial environment. Please wait while I provide you with detailed spatial analysis and navigation guidance."
+
+def get_ai_enhanced_preset_output(caption: str, provider: str, site_id: str) -> str:
+    """Get AI-enhanced preset output based on BLIP caption and textmap analysis"""
+    
+    print(f"🔍 get_ai_enhanced_preset_output called with: provider={provider}, site_id={site_id}")
+    
+    # Get matching data from textmap
+    matching_data = get_matching_data(provider, site_id)
+    print(f"📊 Matching data keys: {list(matching_data.keys()) if matching_data else 'None'}")
+    
+    # Get detailed data if available
+    detailed_data = get_detailed_matching_data(site_id) if site_id == "SCENE_A_MS" else []
+    print(f"📊 Detailed data count: {len(detailed_data)}")
+    
+    # Generate AI spatial reasoning
+    ai_output = generate_ai_spatial_reasoning(caption, provider, site_id, matching_data, detailed_data)
+    print(f"🤖 AI spatial reasoning output: {ai_output[:100]}...")
+    
+    return ai_output
+
+# ✅ Enhanced preset output function that uses AI spatial reasoning
+def get_enhanced_preset_output(caption: str, provider: str, site_id: str, use_ai: bool = True) -> str:
+    """Get enhanced preset output with option to use AI spatial reasoning"""
+    
+    print(f"🔍 get_enhanced_preset_output called with: provider={provider}, site_id={site_id}, use_ai={use_ai}")
+    
+    if use_ai and caption:
+        # Use AI spatial reasoning
+        print("🤖 Using AI spatial reasoning for enhanced output")
+        result = get_ai_enhanced_preset_output(caption, provider, site_id)
+        print(f"🤖 AI-enhanced output result: {result[:100]}...")
+        return result
+    else:
+        # Fall back to traditional preset output
+        print("📚 Using traditional preset output")
+        result = get_preset_output(provider, site_id)
+        print(f"📚 Traditional preset output result: {result[:100]}...")
+        return result

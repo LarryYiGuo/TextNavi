@@ -1,0 +1,213 @@
+{
+  "test_info": {
+    "timestamp": "2025-08-15T17:59:01.004461",
+    "total_photos": 3,
+    "single_channel": "baseline",
+    "dual_channel": "enhanced"
+  },
+  "single_channel_results": [
+    {
+      "photo_id": "test_001",
+      "system_type": "single_channel",
+      "ground_truth": "poi_3d_printer_table",
+      "area_type": "printing_zone",
+      "success": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "confidence": 0.6226468375993249,
+      "margin": 0.2665452517011819,
+      "response_time": 1.441993566869595,
+      "landmark_quality": {
+        "expected_landmarks": [
+          "3d printer",
+          "ender",
+          "orange accents",
+          "filament spools"
+        ],
+        "detected_landmarks": [
+          "3d printer",
+          "ender",
+          "filament spools"
+        ],
+        "coverage_rate": 0.75,
+        "quality_score": 0.46698512819949367
+      }
+    },
+    {
+      "photo_id": "test_002",
+      "system_type": "single_channel",
+      "ground_truth": "dp_bookshelf_qr",
+      "area_type": "storage_zone",
+      "success": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "confidence": 0.7498934892402702,
+      "margin": 0.27537317122063737,
+      "response_time": 0.7206544665084327,
+      "landmark_quality": {
+        "expected_landmarks": [
+          "qr code",
+          "bookshelf",
+          "rnib scrabble",
+          "accessibility brochures"
+        ],
+        "detected_landmarks": [
+          "bookshelf",
+          "accessibility brochures",
+          "rnib scrabble"
+        ],
+        "coverage_rate": 0.75,
+        "quality_score": 0.5624201169302027
+      }
+    },
+    {
+      "photo_id": "test_003",
+      "system_type": "single_channel",
+      "ground_truth": "poi_component_drawer_wall",
+      "area_type": "storage_zone",
+      "success": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "confidence": 0.633192216720944,
+      "margin": 0.10659060992093079,
+      "response_time": 0.7917302584405554,
+      "landmark_quality": {
+        "expected_landmarks": [
+          "component drawer",
+          "black metal frame",
+          "numbered labels"
+        ],
+        "detected_landmarks": [
+          "component drawer",
+          "black metal frame",
+          "numbered labels"
+        ],
+        "coverage_rate": 1.0,
+        "quality_score": 0.633192216720944
+      }
+    }
+  ],
+  "dual_channel_results": [
+    {
+      "photo_id": "test_001",
+      "system_type": "dual_channel",
+      "ground_truth": "poi_3d_printer_table",
+      "area_type": "printing_zone",
+      "success": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "confidence": 0.6044526711124063,
+      "margin": 0.38069233929723556,
+      "response_time": 0.8115565942979814,
+      "landmark_quality": {
+        "expected_landmarks": [
+          "3d printer",
+          "ender",
+          "orange accents",
+          "filament spools"
+        ],
+        "detected_landmarks": [
+          "3d printer",
+          "filament spools",
+          "orange accents"
+        ],
+        "coverage_rate": 0.75,
+        "quality_score": 0.4533395033343047
+      }
+    },
+    {
+      "photo_id": "test_002",
+      "system_type": "dual_channel",
+      "ground_truth": "dp_bookshelf_qr",
+      "area_type": "storage_zone",
+      "success": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "confidence": 0.7140072609819668,
+      "margin": 0.3975362381370413,
+      "response_time": 0.8602459636869221,
+      "landmark_quality": {
+        "expected_landmarks": [
+          "qr code",
+          "bookshelf",
+          "rnib scrabble",
+          "accessibility brochures"
+        ],
+        "detected_landmarks": [
+          "accessibility brochures",
+          "rnib scrabble",
+          "qr code"
+        ],
+        "coverage_rate": 0.75,
+        "quality_score": 0.5355054457364751
+      }
+    },
+    {
+      "photo_id": "test_003",
+      "system_type": "dual_channel",
+      "ground_truth": "poi_component_drawer_wall",
+      "area_type": "storage_zone",
+      "success": true,
+      "top1_correct": true,
+      "top3_correct": true,
+      "confidence": 0.7821415744374395,
+      "margin": 0.33660752933147975,
+      "response_time": 0.5279047324105052,
+      "landmark_quality": {
+        "expected_landmarks": [
+          "component drawer",
+          "black metal frame",
+          "numbered labels"
+        ],
+        "detected_landmarks": [
+          "numbered labels",
+          "black metal frame",
+          "component drawer"
+        ],
+        "coverage_rate": 1.0,
+        "quality_score": 0.7821415744374395
+      }
+    }
+  ],
+  "comparison_metrics": {
+    "top1_accuracy": {
+      "single_channel": 1.0,
+      "dual_channel": 1.0,
+      "improvement": 0.0,
+      "improvement_rate": 0.0
+    },
+    "top3_accuracy": {
+      "single_channel": 1.0,
+      "dual_channel": 1.0,
+      "improvement": 0.0,
+      "improvement_rate": 0.0
+    },
+    "avg_confidence": {
+      "single_channel": 0.6685775145201798,
+      "dual_channel": 0.7002005021772709,
+      "improvement": 0.03162298765709115,
+      "improvement_rate": 4.729890995479578
+    },
+    "avg_margin": {
+      "single_channel": 0.21616967761425002,
+      "dual_channel": 0.3716120355885855,
+      "improvement": 0.1554423579743355,
+      "improvement_rate": 71.90756802243048
+    },
+    "avg_response_time": {
+      "single_channel": 0.9847927639395276,
+      "dual_channel": 0.7332357634651362,
+      "improvement": 0.25155700047439145,
+      "improvement_rate": 25.54415605858763
+    },
+    "key_area_performance": {
+      "printing_zone": {
+        "description": "打印区",
+        "single_channel_top1": 1.0,
+        "dual_channel_top1": 1.0,
+        "improvement": 0.0,
+        "improvement_rate": 0.0
+      }
+    }
+  }
+}

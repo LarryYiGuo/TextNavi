@@ -1,0 +1,1 @@
+ts_iso,req_id,session_id,site_id,provider,caption,top1_id,top1_score,top2_id,top2_score,margin,gt_node_id,hit_top1,hit_top2,hit_hop1,low_conf,low_conf_rule,client_start_ms,server_recv_ms,server_resp_ms,misbelief,clarification_triggered

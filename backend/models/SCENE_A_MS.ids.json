@@ -1,0 +1,82 @@
+[
+  {
+    "type": "node",
+    "id": "dp_ms_entrance",
+    "text": "Maker Space entrance central line"
+  },
+  {
+    "type": "node",
+    "id": "atrium_entry",
+    "text": "Open atrium entry (no door)"
+  },
+  {
+    "type": "node",
+    "id": "dp_bookshelf_qr",
+    "text": "Bookshelf with QR code"
+  },
+  {
+    "type": "node",
+    "id": "poi_3d_printer_table",
+    "text": "3D printer table"
+  },
+  {
+    "type": "node",
+    "id": "poi_component_drawer_wall",
+    "text": "Component drawer wall"
+  },
+  {
+    "type": "cnl",
+    "id": "open atrium ahead beyond stacked boxes",
+    "text": "open atrium ahead beyond stacked boxes"
+  },
+  {
+    "type": "cnl",
+    "id": "stacked boxes on floor about five steps ahead",
+    "text": "stacked boxes on floor about five steps ahead"
+  },
+  {
+    "type": "cnl",
+    "id": "component drawer wall on your right",
+    "text": "component drawer wall on your right"
+  },
+  {
+    "type": "cnl",
+    "id": "QR code bookshelf near entrance",
+    "text": "QR code bookshelf near entrance"
+  },
+  {
+    "type": "kw",
+    "id": "open atrium",
+    "text": "open atrium"
+  },
+  {
+    "type": "kw",
+    "id": "open area",
+    "text": "open area"
+  },
+  {
+    "type": "kw",
+    "id": "boxes on floor",
+    "text": "boxes on floor"
+  },
+  {
+    "type": "kw",
+    "id": "cardboard boxes",
+    "text": "cardboard boxes"
+  },
+  {
+    "type": "kw",
+    "id": "drawer wall",
+    "text": "drawer wall"
+  },
+  {
+    "type": "kw",
+    "id": "qr bookshelf",
+    "text": "qr bookshelf"
+  },
+  {
+    "type": "kw",
+    "id": "green recycling bin",
+    "text": "green recycling bin"
+  }
+]

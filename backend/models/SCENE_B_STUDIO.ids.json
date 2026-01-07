@@ -1,0 +1,112 @@
+[
+  {
+    "type": "node",
+    "id": "dp_studio_entry",
+    "text": "Studio entry near desks, facing window"
+  },
+  {
+    "type": "node",
+    "id": "node_window_glass",
+    "text": "Large glass window wall"
+  },
+  {
+    "type": "node",
+    "id": "poi_orange_sofa",
+    "text": "Orange sofa seating"
+  },
+  {
+    "type": "node",
+    "id": "poi_orange_sofa_chair",
+    "text": "Chair next to orange sofa"
+  },
+  {
+    "type": "node",
+    "id": "node_mid_studio",
+    "text": "Middle of studio near round green chair"
+  },
+  {
+    "type": "cnl",
+    "id": "large glass window ahead with sunlight",
+    "text": "large glass window ahead with sunlight"
+  },
+  {
+    "type": "cnl",
+    "id": "orange sofa seating on the left",
+    "text": "orange sofa seating on the left"
+  },
+  {
+    "type": "cnl",
+    "id": "chair next to the orange sofa",
+    "text": "chair next to the orange sofa"
+  },
+  {
+    "type": "cnl",
+    "id": "large TV screen near entry",
+    "text": "large TV screen near entry"
+  },
+  {
+    "type": "cnl",
+    "id": "storage shelves with plastic boxes",
+    "text": "storage shelves with plastic boxes"
+  },
+  {
+    "type": "kw",
+    "id": "glass window",
+    "text": "glass window"
+  },
+  {
+    "type": "kw",
+    "id": "window wall",
+    "text": "window wall"
+  },
+  {
+    "type": "kw",
+    "id": "sunlight",
+    "text": "sunlight"
+  },
+  {
+    "type": "kw",
+    "id": "orange sofa",
+    "text": "orange sofa"
+  },
+  {
+    "type": "kw",
+    "id": "couch",
+    "text": "couch"
+  },
+  {
+    "type": "kw",
+    "id": "chair",
+    "text": "chair"
+  },
+  {
+    "type": "kw",
+    "id": "tv screen",
+    "text": "tv screen"
+  },
+  {
+    "type": "kw",
+    "id": "display",
+    "text": "display"
+  },
+  {
+    "type": "kw",
+    "id": "storage shelves",
+    "text": "storage shelves"
+  },
+  {
+    "type": "kw",
+    "id": "plastic boxes",
+    "text": "plastic boxes"
+  },
+  {
+    "type": "kw",
+    "id": "cable on floor",
+    "text": "cable on floor"
+  },
+  {
+    "type": "kw",
+    "id": "low table",
+    "text": "low table"
+  }
+]

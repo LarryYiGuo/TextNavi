@@ -1,0 +1,24 @@
+{
+  "type": "landmark",
+  "id": "",
+  "anchor": {"node_id": "","region_id": ""},
+  "term": "",
+  "syn": "",
+  "modality": "",
+  "salience": "0-1",
+  "retrieval": {
+    "index_terms": "",
+    "tags": ""
+  },
+  "views": [
+    {
+      "view_id": "",
+      "description": "",
+      "src": "IMG_0107.JPG",
+      "source": "human/BLIP/CLIP"
+    }
+  ],
+  "fusion": {
+    "w_detail_prior": 0.40
+  }
+}

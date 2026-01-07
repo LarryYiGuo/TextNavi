@@ -1,0 +1,27 @@
+# VLN4VI WebAPP Backend Dependencies
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# AI/ML Libraries
+torch>=2.0.0
+transformers>=4.35.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.0  # Use faiss-gpu for CUDA support
+
+# Image Processing
+Pillow>=10.0.0
+
+# Audio Processing
+faster-whisper>=0.9.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+numpy>=1.24.0
+requests>=2.31.0
+
+# Optional: For GPU support
+# faiss-gpu>=1.7.0
+# torch>=2.0.0+cu118  # CUDA 11.8 version

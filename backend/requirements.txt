@@ -1,0 +1,38 @@
+# VLN4VI Backend Dependencies - Python 3.12 Compatible
+
+# Core Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+
+# HTTP Client
+requests>=2.31.0
+httpx>=0.25.0
+
+# Data Processing
+numpy>=1.26.0
+pandas>=2.1.0
+
+# Machine Learning & AI
+torch>=2.1.0
+transformers>=4.35.0
+pillow>=10.0.0
+sentence-transformers>=2.2.0
+
+# Utilities
+python-multipart>=0.0.6
+
+# Image Processing
+opencv-python>=4.8.0
+
+# Environment & Configuration
+python-dotenv>=1.0.0
+
+# Async Support
+aiofiles>=23.2.0
+
+# Development (Optional - uncomment if needed)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.11.0
+# flake8>=6.1.0
