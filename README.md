@@ -260,13 +260,12 @@ CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ## 联系方式 (Contact)
 
-- 项目维护者: [Your Name]
-- 邮箱: [your.email@example.com]
-- 项目地址: [GitHub Repository URL]
+- 项目维护者: LarryYiGuo
+- 邮箱: ucbqwg7@ucl.ac.uk
 
 ## 更新日志 (Changelog)
 
-### v1.0.0 (2024-01-XX)
+### v1.0.0 (2025-01-07)
 - 初始版本发布
 - 完整的DG优化功能
 - 综合测试套件
