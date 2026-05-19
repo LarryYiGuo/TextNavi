@@ -1,166 +1,183 @@
 # VLN4VI - Indoor Navigation System
 
-## 项目概述 (Project Overview)
+## Project Overview
 
-VLN4VI是一个基于视觉的室内导航系统，专为视障人士设计。该系统集成了先进的计算机视觉技术、语义理解和可访问性功能，提供准确、可靠的室内导航体验。
+VLN4VI is a vision-based indoor navigation system designed for visually impaired users. The system integrates advanced computer vision techniques, semantic understanding, and accessibility features to deliver accurate and reliable indoor navigation.
 
-## 系统架构 (System Architecture)
+## System Architecture
 
 ```
 VLN4VI/
-├── backend/                 # 后端服务
-│   ├── app.py              # 主应用文件
-│   ├── database_optimization.py    # 数据库优化
-│   ├── dg_evaluation_enhancement.py # DG评估增强
-│   ├── user_needs_validator.py     # 用户需求验证
-│   ├── accessibility_checker.py    # 可访问性检查
-│   ├── indoor_gml_generator.py     # IndoorGML生成
-│   ├── enhanced_metrics_collector.py # 增强指标收集
-│   └── comprehensive_testing.py    # 综合测试
-├── frontend/               # 前端界面
+├── backend/                         # Backend services
+│   ├── app.py                       # Main application file
+│   ├── database_optimization.py     # Database optimization
+│   ├── dg_evaluation_enhancement.py # DG evaluation enhancement
+│   ├── user_needs_validator.py      # User needs validation
+│   ├── accessibility_checker.py     # Accessibility checking
+│   ├── indoor_gml_generator.py      # IndoorGML generation
+│   ├── enhanced_metrics_collector.py# Enhanced metrics collection
+│   └── comprehensive_testing.py     # Comprehensive testing
+├── frontend/                        # Frontend interface
 │   ├── src/
-│   │   ├── App.jsx        # 主应用组件
-│   │   └── frontend_optimization.jsx # 前端优化
+│   │   ├── App.jsx                  # Main application component
+│   │   └── frontend_optimization.jsx# Frontend optimization
 │   └── package.json
-├── start_system.py         # 系统启动脚本
-└── README.md              # 项目说明文档
+├── start_system.py                  # System startup script
+└── README.md                        # Project documentation
 ```
 
+## Quick Start
 
-## 快速开始 (Quick Start)
-
-### 1. 环境要求 (Requirements)
+### 1. Requirements
 
 - Python 3.8+
 - Node.js 16+
 - SQLite 3
-- 现代浏览器支持
+- Modern browser support
 
-### 2. 安装依赖 (Install Dependencies)
+### 2. Install Dependencies
 
-#### 后端依赖
+#### Backend dependencies
+
 ```bash
 cd backend
 pip install -r requirements.txt
 ```
 
-#### 前端依赖
+#### Frontend dependencies
+
 ```bash
 cd frontend
 npm install
 ```
 
-### 3. 启动系统 (Start System)
+### 3. Start System
 
-使用一键启动脚本：
+Use the one-click startup script:
+
 ```bash
 python start_system.py
 ```
 
-或者手动启动：
+Or start manually:
 
-#### 启动后端
+#### Start the backend
+
 ```bash
 cd backend
 python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-#### 启动前端
+#### Start the frontend
+
 ```bash
 cd frontend
 npm start
 ```
 
-### 4. 访问系统 (Access System)
+### 4. Access the System
 
-- 后端API: http://localhost:8000
-- 前端界面: http://localhost:3000
-- 健康检查: http://localhost:8000/health/enhanced
-- API文档: http://localhost:8000/docs
+- Backend API: http://localhost:8000
+- Frontend UI: http://localhost:3000
+- Health check: http://localhost:8000/health/enhanced
+- API docs: http://localhost:8000/docs
 
-## 核心功能 (Core Features)
+## Core Features
 
-### 1. 视觉定位 (Visual Localization)
-- 基于照片的室内定位
-- 置信度评估
-- 多模态信息融合
+### 1. Visual Localization
 
-### 2. 导航指令 (Navigation Instructions)
-- 自然语言指令生成
-- 语音合成支持
-- 多语言支持
+- Photo-based indoor localization
+- Confidence estimation
+- Multimodal information fusion
 
-### 3. 可访问性 (Accessibility)
-- WCAG 2.2 合规性
-- VoiceOver 支持
-- 高对比度模式
-- 大字体模式
+### 2. Navigation Instructions
 
-### 4. 指标收集 (Metrics Collection)
-- 实时性能监控
-- 用户行为分析
-- 系统健康检查
+- Natural language instruction generation
+- Speech synthesis support
+- Multilingual support
 
-### 5. 评估系统 (Evaluation System)
-- DG目标评估
-- 用户需求验证
-- 性能指标分析
+### 3. Accessibility
 
-## API端点 (API Endpoints)
+- WCAG 2.2 compliance
+- VoiceOver support
+- High-contrast mode
+- Large-font mode
 
-### 核心功能
-- `POST /api/locate` - 位置识别
-- `POST /api/qa` - 问答交互
+### 4. Metrics Collection
 
-### DG优化功能
-- `POST /api/dg/metrics/collect` - 指标收集
-- `POST /api/dg/evaluation/record` - 评估记录
-- `POST /api/dg/accessibility/check` - 可访问性检查
-- `POST /api/dg/indoor_gml/generate` - IndoorGML生成
-- `POST /api/dg/user_needs/record` - 用户需求记录
+- Real-time performance monitoring
+- User behavior analytics
+- System health checks
 
-### 数据管理
-- `GET /api/dg/metrics/export/{session_id}` - 指标导出
-- `GET /api/dg/metrics/analytics/{session_id}` - 分析报告
-- `GET /api/dg/user_needs/matrix` - 需求矩阵
+### 5. Evaluation System
 
-## 数据库结构 (Database Structure)
+- DG goal evaluation
+- User needs validation
+- Performance metrics analysis
 
-系统使用两个主要数据库：
+## API Endpoints
 
-### 主数据库 (Main Database)
-- `dg_evaluations` - DG评估数据
-- `user_needs_validation` - 用户需求验证
-- `accessibility_tests` - 可访问性测试
-- `indoor_gml_maps` - IndoorGML地图
+### Core Features
 
-### 指标数据库 (Metrics Database)
-- `metrics` - 指标数据
-- `sessions` - 会话管理
-- `evaluation_metrics` - 评估指标
-- `user_feedback` - 用户反馈
+- `POST /api/locate` — Location recognition
+- `POST /api/qa` — Question-and-answer interaction
 
-## 测试和验证 (Testing and Validation)
+### DG Optimization Features
 
-### 运行综合测试
+- `POST /api/dg/metrics/collect` — Metrics collection
+- `POST /api/dg/evaluation/record` — Evaluation record
+- `POST /api/dg/accessibility/check` — Accessibility check
+- `POST /api/dg/indoor_gml/generate` — IndoorGML generation
+- `POST /api/dg/user_needs/record` — User needs record
+
+### Data Management
+
+- `GET /api/dg/metrics/export/{session_id}` — Metrics export
+- `GET /api/dg/metrics/analytics/{session_id}` — Analytics report
+- `GET /api/dg/user_needs/matrix` — Needs matrix
+
+## Database Structure
+
+The system uses two main databases:
+
+### Main Database
+
+- `dg_evaluations` — DG evaluation data
+- `user_needs_validation` — User needs validation
+- `accessibility_tests` — Accessibility tests
+- `indoor_gml_maps` — IndoorGML maps
+
+### Metrics Database
+
+- `metrics` — Metrics data
+- `sessions` — Session management
+- `evaluation_metrics` — Evaluation metrics
+- `user_feedback` — User feedback
+
+## Testing and Validation
+
+### Run Comprehensive Tests
+
 ```bash
 cd backend
 python comprehensive_testing.py
 ```
 
-### 测试覆盖范围
-- 基础连接性测试
-- 数据库功能测试
-- DG评估功能测试
-- 用户需求验证测试
-- 可访问性测试
-- IndoorGML功能测试
-- 性能测试
-- 集成测试
+### Test Coverage
 
-## 配置选项 (Configuration)
+- Basic connectivity tests
+- Database functionality tests
+- DG evaluation function tests
+- User needs validation tests
+- Accessibility tests
+- IndoorGML function tests
+- Performance tests
+- Integration tests
 
-### 环境变量
+## Configuration
+
+### Environment Variables
+
 ```bash
 ENABLE_DG_EVALUATION=true
 ENABLE_ACCESSIBILITY_CHECKING=true
@@ -168,41 +185,47 @@ ENABLE_INDOOR_GML=true
 METRICS_STORAGE_PATH=./metrics_data
 ```
 
-### 数据库配置
-- 自动创建表结构
-- 索引优化
-- 性能监控
+### Database Configuration
 
-## 开发指南 (Development Guide)
+- Automatic table creation
+- Index optimization
+- Performance monitoring
 
-### 代码结构
-- 模块化设计
-- 清晰的接口定义
-- 完整的错误处理
-- 详细的文档注释
+## Development Guide
 
-### 添加新功能
-1. 在相应模块中实现功能
-2. 添加API端点
-3. 更新数据库结构
-4. 编写测试用例
-5. 更新文档
+### Code Structure
 
-### 代码规范
-- 遵循PEP 8
-- 使用类型提示
-- 编写文档字符串
-- 错误处理最佳实践
+- Modular design
+- Clear interface definitions
+- Comprehensive error handling
+- Detailed documentation comments
 
-## 部署指南 (Deployment Guide)
+### Adding New Features
 
-### 生产环境
-- 使用生产级Web服务器
-- 配置反向代理
-- 启用HTTPS
-- 设置监控和日志
+1. Implement the feature in the corresponding module
+2. Add API endpoints
+3. Update the database schema
+4. Write test cases
+5. Update the documentation
 
-### Docker部署
+### Coding Standards
+
+- Follow PEP 8
+- Use type hints
+- Write docstrings
+- Follow error-handling best practices
+
+## Deployment Guide
+
+### Production Environment
+
+- Use a production-grade web server
+- Configure a reverse proxy
+- Enable HTTPS
+- Set up monitoring and logging
+
+### Docker Deployment
+
 ```dockerfile
 FROM python:3.9-slim
 WORKDIR /app
@@ -212,40 +235,43 @@ COPY . .
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-## 故障排除 (Troubleshooting)
+## Troubleshooting
 
-### 常见问题
-1. **端口冲突**: 检查8000和3000端口是否被占用
-2. **依赖缺失**: 确保所有Python包和Node模块已安装
-3. **数据库错误**: 检查SQLite权限和文件路径
-4. **前端启动失败**: 检查Node.js版本和npm配置
+### Common Issues
 
-### 日志查看
-- 后端日志: 控制台输出
-- 前端日志: 浏览器开发者工具
-- 数据库日志: SQLite日志文件
+1. **Port conflicts**: Check whether ports 8000 and 3000 are already in use
+2. **Missing dependencies**: Make sure all Python packages and Node modules are installed
+3. **Database errors**: Check SQLite permissions and file paths
+4. **Frontend startup failure**: Check the Node.js version and npm configuration
 
-## 贡献指南 (Contributing)
+### Viewing Logs
 
-1. Fork项目
-2. 创建功能分支
-3. 提交更改
-4. 推送到分支
-5. 创建Pull Request
+- Backend logs: console output
+- Frontend logs: browser developer tools
+- Database logs: SQLite log files
 
-## 许可证 (License)
+## Contributing
 
-本项目采用MIT许可证。
+1. Fork the project
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
 
-## 联系方式 (Contact)
+## License
 
-- 项目维护者: LarryYiGuo
-- 邮箱: ucbqwg7@ucl.ac.uk
+This project is licensed under the MIT License.
 
-## 更新日志 (Changelog)
+## Contact
+
+- Project maintainer: LarryYiGuo
+- Email: ucbqwg7@ucl.ac.uk
+
+## Changelog
 
 ### v1.0.0 (2025-01-07)
-- 初始版本发布
-- 完整的DG优化功能
-- 综合测试套件
-- 一键启动脚本
+
+- Initial release
+- Full DG optimization features
+- Comprehensive test suite
+- One-click startup script
