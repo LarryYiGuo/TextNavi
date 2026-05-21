@@ -1,5 +1,5 @@
 import os, io, time, json, tempfile, subprocess, numpy as np, csv, uuid
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -1143,98 +1143,76 @@ def are_neighbors(node1, node2):
     # TODO: 实现真实的拓扑邻居检查
     return False  # 暂时返回False，避免错误
 
-def calculate_calibrated_confidence_and_margin(candidates: List[Dict], top_k: int = 5) -> tuple:
-    """修复：统一置信度标尺，使用线性归一化"""
-    if not candidates or len(candidates) < 2:
+def calculate_calibrated_confidence_and_margin(
+    candidates: List[Dict],
+    top_k: int = 5,
+    session_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+) -> tuple:
+    """统一置信度计算：margin → sigmoid → consistency × continuity × content_match
+
+    🔧 FIX P0-1: 原实现把 struct_top1/detail_top1 写死成 None，导致
+       calibrate_confidence 里 consistency 永远走 else 分支返回 0.92（-8% 惩罚）。
+       现在从 candidates[0] 上读 retriever 挂上的 _struct_top1_id / _detail_top1_id。
+    🔧 FIX P0-2: 原实现 same_as_last 永远为 True（current_node_id == None 永真），
+       现在从 SESSIONS[session_id]["current_location"] 读真实上一帧位置比较。
+
+    Args:
+        candidates: 融合后的候选列表（retriever.retrieve 输出）
+        top_k: 取前 k 个候选（仅用于潜在扩展，当前只用 top1/top2）
+        session_id: 当前会话 id，用于读取上一帧位置（不传则 same_as_last=False）
+        site_id: 当前场景 id（保留供未来扩展，目前未使用）
+
+    Returns:
+        (confidence, margin, top1_raw_score, top2_raw_score)
+    """
+    if not candidates:
         return 0.0, 0.0, 0.0, 0.0
-    
-    # 获取top-k分数
+
     top_scores = [float(c["score"]) for c in candidates[:top_k]]
-    
     if len(top_scores) < 2:
-        return top_scores[0], 0.0, top_scores[0], 0.0
-    
+        # 只有一个候选时，margin=0，置信度走标定函数
+        top1_score = top_scores[0]
+        top1 = candidates[0]
+        confidence, _ = calibrate_confidence(
+            margin=0.0,
+            has_detail=top1.get("has_detail", False),
+            struct_top1=top1.get("_struct_top1_id"),
+            detail_top1=top1.get("_detail_top1_id"),
+            same_as_last=False,
+            content_match=1.0,
+        )
+        return confidence, 0.0, top1_score, 0.0
+
     top1_score = top_scores[0]
     top2_score = top_scores[1]
-    
-    # 修复：统一使用线性归一化，避免softmax过度夸大
     margin = max(0.0, top1_score - top2_score)
-    
-    # 使用线性归一化计算置信度
-    tau_low, tau_high = 0.10, 0.50
-    
-    if margin <= tau_low:
-        confidence = 0.2  # 低置信度下限
-    elif margin >= tau_high:
-        confidence = 0.9  # 高置信度上限
-    else:
-        # 线性插值
-        confidence = 0.2 + (0.9 - 0.2) * (margin - tau_low) / (tau_high - tau_low)
-    
-    # 检查detail可用性，如果没有detail则应用平滑折扣因子
-    top1_candidate = candidates[0]
-    has_detail = top1_candidate.get("has_detail", False)
-    
-    # 🔧 NEW: 使用平滑的margin→confidence映射，去掉硬帽
-    def conf_from_margin(margin, has_detail, base=0.15, k=12, nodetail_factor=0.92):
-        """平滑置信度 = margin × 一致性 × 连续性（全乘，再截断）"""
-        # S型曲线：margin=base 时约 0.5，>base 快速上升，<base 迅速下降
-        m = max(1e-6, margin)
-        conf_margin = 1.0 / (1.0 + math.exp(-k * (m - base)))
-        
-        # 应用detail因子
-        if not has_detail:
-            conf_margin *= nodetail_factor  # 0.92，不要硬帽
-        
-        # 设置下限，避免报 0
-        return max(0.2, min(conf_margin, 0.98))
-    
-    # 🔧 NEW: 置信度一致性升级
-    def calculate_consistency(struct_top1, detail_top1):
-        """计算结构/细节一致性：相同top1给额外提升，邻居给小幅提升，冲突时减分"""
-        if struct_top1 == detail_top1:
-            return 1.15  # 完全一致，大幅提升
-        elif struct_top1 and detail_top1:  # 简化检查，避免复杂邻居判断
-            return 1.05  # 邻居关系，小幅提升
-        else:
-            return 0.92  # 冲突，减分
-    
-    def calculate_continuity_factor(current_node, previous_node):
-        """计算连续性因子：与上一帧位置的关系"""
-        if not previous_node or current_node == previous_node:
-            return 1.10  # 相同位置，小幅提升
-        else:
-            return 1.00  # 其他位置，无影响
-    
-    # 获取结构通道和细节通道的top1（需要从外部传入）
-    # 这里先使用默认值，实际调用时需要传入
-    struct_top1 = None  # TODO: 从外部传入
-    detail_top1 = None  # TODO: 从外部传入
-    
-    # 计算一致性系数和连续性因子
-    consistency = calculate_consistency(struct_top1, detail_top1)
-    # 修复：current_node_id未定义，使用top1_id作为当前节点
-    current_node_id = top1_id if 'top1_id' in locals() else None
-    continuity = calculate_continuity_factor(current_node_id, None)  # 简化，避免复杂依赖
-    
-    if consistency != 1.0:
-        print(f"🔍 一致性检查: struct_top1={struct_top1}, detail_top1={detail_top1}, consistency={consistency:.3f}")
-    
-    # 🔧 NEW: 温和的置信度标定，避免"先拉满再腰斩"
-    confidence, should_update_session = calibrate_confidence(
-        margin, has_detail, struct_top1, detail_top1, 
-        current_node_id == None, 1.0  # content_match默认为1.0
+
+    top1 = candidates[0]
+    top1_id = top1.get("id")
+    has_detail = top1.get("has_detail", False)
+    struct_top1 = top1.get("_struct_top1_id")
+    detail_top1 = top1.get("_detail_top1_id")
+
+    # 从 session 读上一帧位置（用于 same_as_last 判定）
+    previous_node_id = None
+    if session_id and session_id in SESSIONS:
+        previous_node_id = SESSIONS[session_id].get("current_location")
+    same_as_last = bool(previous_node_id and top1_id == previous_node_id)
+
+    confidence, _should_update = calibrate_confidence(
+        margin=margin,
+        has_detail=has_detail,
+        struct_top1=struct_top1,
+        detail_top1=detail_top1,
+        same_as_last=same_as_last,
+        content_match=1.0,
     )
-    
-    print(f"🔧 置信度标定: margin={margin:.3f}, has_detail={has_detail}, confidence={confidence:.3f}, should_update={should_update_session}")
-    
-    # 修复：添加断言式日志，确保状态一致
-    print(f"🔧 [ASSERT] 统一置信度计算:")
-    print(f"   Raw scores: top1={top1_score:.4f}, top2={top2_score:.4f}")
-    print(f"   Margin: {margin:.4f}")
-    print(f"   Calculated confidence: {confidence:.4f}")
-    print(f"   Has detail: {has_detail}")
-    
+
+    print(f"🔧 置信度标定: margin={margin:.3f}, has_detail={has_detail}, "
+          f"struct_top1={struct_top1}, detail_top1={detail_top1}, "
+          f"same_as_last={same_as_last} → confidence={confidence:.3f}")
+
     return confidence, margin, top1_score, top2_score
 
 def apply_continuity_boost(top1_score: float, session_id: str, site_id: str, 
@@ -1252,16 +1230,14 @@ def apply_continuity_boost(top1_score: float, session_id: str, site_id: str,
     reason = "none"
     
     try:
-        # 获取会话历史
-        session_key = f"{session_id}_{site_id}"
-        if session_key in SESSIONS:
-            location_history = SESSIONS[session_key].get("location_history", [])
-        else:
-            location_history = []
-            
+        # 🔧 FIX P0-3 配套：原代码用 f"{session_id}_{site_id}" 作 key 找不到 session
+        # （update_session_location 实际用 session_id 作 key），且字段名是 "location" 不是 "node_id"
+        session = SESSIONS.get(session_id, {})
+        location_history = session.get("location_history", [])
+
         if len(location_history) > 0:
-            last_location = location_history[-1]["node_id"]
-            
+            last_location = location_history[-1].get("location")
+
             if last_location == current_node_id:
                 # 位置一致：给予正向boost
                 boost = 0.05
@@ -1584,9 +1560,16 @@ def get_unified_retriever():
                     return node2 in self.topology_graph.get(node1, [])
                 
                 def _get_previous_location(self):
-                    """获取上一帧位置（简化实现）"""
-                    # TODO: 从会话历史中获取
-                    return None
+                    """获取上一帧位置（从当前 session 读）
+
+                    🔧 FIX P0-3: 原实现写死 return None，导致 topology continuity prior
+                    永远不会触发（+0.25 / +0.10 boost 失效）。
+                    retrieve() 调用时通过 _session_id 属性传入，这里从 SESSIONS 读取。
+                    """
+                    sid = getattr(self, '_session_id', None)
+                    if not sid or sid not in SESSIONS:
+                        return None
+                    return SESSIONS[sid].get("current_location")
                 
                 def _load_structure_data(self):
                     """加载结构数据（根据场景动态选择）"""
@@ -1613,25 +1596,12 @@ def get_unified_retriever():
                                 print(f"🔧 成功加载结构数据: {structure_file}")
                                 return data
                         else:
-                            print(f"⚠️ 结构数据文件不存在: {structure_file}")
-                            # 返回模拟数据作为fallback
-                            return {
-                                "input": {
-                                    "topology": {
-                                        "nodes": [
-                                            {"id": "dp_ms_entrance", "type": "entrance"},
-                                            {"id": "poi_3d_printer_table", "type": "workstation"},
-                                            {"id": "atrium_edge", "type": "boundary"}
-                                        ],
-                                        "edges": [
-                                            {"from": "dp_ms_entrance", "to": "poi_3d_printer_table"},
-                                            {"from": "poi_3d_printer_table", "to": "atrium_edge"}
-                                        ]
-                                    }
-                                }
-                            }
+                            # 🔧 FIX P0-7: 文件不存在直接报空，不再返回 mock fake data
+                            # (mock data 会让系统静默用 3 个假节点跑，掩盖配置错误)
+                            print(f"❌ 结构数据文件不存在: {structure_file}")
+                            return {}
                     except Exception as e:
-                        print(f"⚠️  Failed to load structure data: {e}")
+                        print(f"❌ Failed to load structure data: {e}")
                         return {}
                 
                 def _ensure_structure_data_loaded(self):
@@ -1654,18 +1624,13 @@ def get_unified_retriever():
                         self.detail_data = self._load_detail_data()
                 
                 def _load_detail_data(self):
-                    """加载细节数据（Sense_A_MS.jsonl等）"""
-                    try:
-                        # 这里应该加载实际的Detail数据
-                        # 暂时返回模拟数据
-                        return {
-                            "dp_ms_entrance": {"id": "dp_ms_entrance", "features": ["glass doors", "yellow line"]},
-                            "poi_3d_printer_table": {"id": "poi_3d_printer_table", "features": ["3D printer", "workbench"]},
-                            "atrium_edge": {"id": "atrium_edge", "features": ["windows", "soft seats"]}
-                        }
-                    except Exception as e:
-                        print(f"⚠️  Failed to load detail data: {e}")
-                        return {}
+                    """加载细节数据（Sense_A_MS.jsonl等）— 委托给 _load_detail_once 真实加载
+
+                    🔧 FIX P0-7: 原实现返回 3 个 mock 节点会让 self.detail_data 静默挂上假数据，
+                    现在统一从 _load_detail_once 走真实加载路径。
+                    """
+                    scene_id = getattr(self, 'current_scene_filter', None) or 'SCENE_A_MS'
+                    return self._load_detail_once(scene_id)
                 
                 def _channel_calibration(self, scores, tau):
                     """步骤A：通道内校准 - 温度化softmax（增强版）"""
@@ -1766,16 +1731,20 @@ def get_unified_retriever():
                         return probs  # 失败时返回原始概率
                 
                 def _calculate_channel_entropy(self, probabilities):
-                    """计算通道熵（分布尖锐度）"""
-                    if not probabilities:
+                    """计算归一化通道熵 H ∈ [0,1]（0=高确定度，1=均匀分布）
+
+                    Per paper Eq.(4): H_c = -1/log(k) Σ p_i log p_i
+                    """
+                    if not probabilities or len(probabilities) < 2:
                         return 1.0
-                    
+
                     entropy = 0.0
                     for p in probabilities:
                         if p > 0:
                             entropy -= p * np.log(p)
-                    
-                    return entropy
+
+                    # 归一化到 [0,1]：除以 log(k)（最大熵）
+                    return float(entropy / np.log(len(probabilities)))
                 
                 def _adaptive_weights(self, struct_entropy, detail_entropy):
                     """根据通道熵自适应调整权重（标准公式实现）"""
@@ -1906,16 +1875,19 @@ def get_unified_retriever():
                         conflict_threshold = 0.5  # 冲突检测阈值
                         alpha_final = alpha
                         beta_final = beta
-                        
+
+                        # 🔧 FIX P0-1/P0-2 配套：记录两个通道的 top1 id，
+                        # 后续 calculate_calibrated_confidence_and_margin 读取以计算 consistency
+                        struct_top1_id = struct_candidates[0]['id'] if struct_candidates else None
+                        detail_top1_id = detail_candidates[0]['id'] if detail_candidates else None
+
                         # 概率转对数几率 - 安全版本
                         def prob_to_logit(p, eps=1e-6):
                             p = min(max(p, eps), 1 - eps)
                             import math
                             return math.log(p/(1-p))
-                        
+
                         if len(struct_candidates) > 0 and len(detail_candidates) > 0:
-                            struct_top1_id = struct_candidates[0]['id']
-                            detail_top1_id = detail_candidates[0]['id']
                             
                             if struct_top1_id != detail_top1_id:
                                 # 计算两个通道top1的logit差异
@@ -1994,7 +1966,15 @@ def get_unified_retriever():
                             fused_cand["conflict_strategy"] = "conflict_gated" if conflict_detected else "normal"
                             
                             fused_candidates.append(fused_cand)
-                        
+
+                        # 🔧 FIX P0-1/P0-2 配套：把两个通道的 top1 id 挂在融合 top1 候选上，
+                        # 供下游 calculate_calibrated_confidence_and_margin 计算 consistency。
+                        # 注意：fused_candidates 此时还未排序，所以挂在所有候选上，
+                        # 即使后续重排序也能在 top1 上读到（每个候选都带这个相同的元信息）。
+                        for fc in fused_candidates:
+                            fc["_struct_top1_id"] = struct_top1_id
+                            fc["_detail_top1_id"] = detail_top1_id
+
                         # 🔧 FIX: 融合后二次锐化 + 拓扑先验
                         if fused_logits and len(fused_logits) > 0:
                             try:
@@ -2085,16 +2065,16 @@ def get_unified_retriever():
                     try:
                         boost_value = 0.0
                         
-                        # 1. 方向一致性boost（增强）
-                        if hasattr(candidate, 'bearing_hint'):
-                            bearing = candidate.get('bearing_hint', '')
-                            if bearing and any(word in caption.lower() for word in bearing.split()):
-                                boost_value += 0.2  # 从0.1增加到0.2
-                        
-                        # 2. 拓扑合法性boost（增强）
-                        if hasattr(candidate, 'topology_valid'):
-                            if candidate.get('topology_valid', False):
-                                boost_value += 0.15  # 从0.05增加到0.15
+                        # 1. 方向一致性boost
+                        # 🔧 FIX P0-5: candidate 是 dict，不能用 hasattr (永远 False)
+                        bearing = candidate.get('bearing_hint', '')
+                        if bearing and any(word in caption.lower() for word in bearing.split()):
+                            boost_value += 0.2
+
+                        # 2. 拓扑合法性boost
+                        # 🔧 FIX P0-5: candidate 是 dict，不能用 hasattr
+                        if candidate.get('topology_valid', False):
+                            boost_value += 0.15
                         
                         # 3. 空间关系一致性boost（增强）
                         spatial_relations = candidate.get('spatial_relations', {})
@@ -2168,11 +2148,16 @@ def get_unified_retriever():
                     except Exception:
                         return []
 
-                def retrieve(self, caption, top_k=10, scene_filter=None):
-                    """增强双通道检索：使用改进的融合策略，返回候选列表"""
-                    # 设置当前场景过滤器，用于构建detail索引
+                def retrieve(self, caption, top_k=10, scene_filter=None, session_id=None):
+                    """增强双通道检索：使用改进的融合策略，返回候选列表
+
+                    🔧 FIX P0-3: 新增 session_id 参数，用于 _get_previous_location 拿上一帧位置。
+                    不传时拓扑连续性 prior 不生效（保持向后兼容）。
+                    """
+                    # 设置当前场景过滤器与会话 id，用于 detail 加载和拓扑 prior
                     self.current_scene_filter = scene_filter
-                    
+                    self._session_id = session_id
+
                     print(f"🔧 Enhanced dual-channel retrieval for: {caption[:50]}...")
                     
                     try:
@@ -3430,7 +3415,8 @@ async def api_locate(
                 # Use enhanced dual-channel retrieval with scene filtering
                 try:
                     # 获取融合后的候选列表
-                    candidates = retriever.retrieve(cap, top_k=10, scene_filter=site_id)
+                    # 🔧 FIX P0-3: 传入 session_id 使 retriever 能拿到上一帧位置（topology prior）
+                    candidates = retriever.retrieve(cap, top_k=10, scene_filter=site_id, session_id=session_id)
                     
                     if not candidates:
                         print("❌ 无法获取候选列表")
@@ -3448,7 +3434,10 @@ async def api_locate(
                 print(f"🔧 Applying enhanced confidence calculation for {len(candidates)} candidates")
                 
                 # Phase 1: Softmax calibration
-                calibrated_confidence, calibrated_margin, raw_top1_score, raw_top2_score = calculate_calibrated_confidence_and_margin(candidates, top_k=5)
+                # 🔧 FIX P0-1/P0-2: 传入 session_id/site_id，让函数能读真实上一帧位置和通道 top1 id
+                calibrated_confidence, calibrated_margin, raw_top1_score, raw_top2_score = calculate_calibrated_confidence_and_margin(
+                    candidates, top_k=5, session_id=session_id, site_id=site_id
+                )
                 
                 # Phase 2: Extract basic candidate info
                 top1 = candidates[0]
@@ -3498,13 +3487,13 @@ async def api_locate(
                 clarification_triggered = False
                 
                 # Check for structure-detail consistency (enhanced dual-channel fusion mode)
+                # 🔧 FIX P0-5: top1 是 dict，不能用 hasattr/getattr (永远失败)
                 structure_detail_conflict = False
-                if hasattr(top1, 'structure_score') and hasattr(top1, 'detail_score'):
-                    structure_score = getattr(top1, 'structure_score', top1_score)
-                    detail_score = getattr(top1, 'detail_score', 0.0)
-                    
-                    # Check for structure-detail inconsistency
-                    if detail_score < structure_score * 0.3:  # Detail score < 30% of structure score
+                structure_score = top1.get('structure_score')
+                detail_score = top1.get('detail_score')
+                if structure_score is not None and detail_score is not None and structure_score > 0:
+                    # Detail score < 30% of structure score 视为冲突
+                    if detail_score < structure_score * 0.3:
                         structure_detail_conflict = True
                         print(f"⚠️ Structure-detail conflict detected: structure={structure_score:.3f}, detail={detail_score:.3f}")
                 
