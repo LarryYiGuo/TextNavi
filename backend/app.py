@@ -1055,8 +1055,8 @@ def _now_ms():
 
 # 🔧 FIX: 调整低置信度阈值，让60%+的confidence不再显示警告
 # 低置信度阈值配置 - 双通道模式，优化阈值
-LOWCONF_SCORE_TH = float(os.getenv("LOWCONF_SCORE_TH", "0.40"))  # 双通道模式：40% confidence（从50%降低到40%）
-LOWCONF_MARGIN_TH = float(os.getenv("LOWCONF_MARGIN_TH", "0.05"))  # 双通道模式：5% margin（从10%降低到5%）
+LOWCONF_SCORE_TH = float(os.getenv("LOWCONF_SCORE_TH", "0.50"))  # 🔧 FIX P1-5: 跟论文 §3.4 对齐（confidence < 0.50 → 请求新照片）
+LOWCONF_MARGIN_TH = float(os.getenv("LOWCONF_MARGIN_TH", "0.10"))  # 🔧 FIX P1-5: 跟论文 §3.4 对齐（margin < 0.10 → 请求新照片）
 
 # 🔧 NEW: Softmax temperature calibration for confidence scoring
 SOFTMAX_TEMPERATURE = float(os.getenv("SOFTMAX_TEMPERATURE", "0.06"))  # Temperature for softmax calibration
@@ -1670,9 +1670,14 @@ def get_unified_retriever():
                     return probabilities
                 
                 def _conflict_gate(self, alpha, beta, struct_logit, detail_logit, gap=0.5):
-                    """冲突门控函数：局部返回值，不修改全局权重"""
+                    """冲突门控：两通道 top1 logit 差距大时，偏向结构通道（permanence-aware backbone）
+
+                    🔧 FIX P1-2: 原实现 alpha*=0.7, beta*=1.1 — 冲突时反而更信细节通道，
+                    跟论文 §3.2 "structural backbone for localisation" 叙事完全相反。
+                    现在改成 alpha*=1.1, beta*=0.7：冲突时结构通道（建筑骨架）压制噪声大的细节通道。
+                    """
                     if abs(struct_logit - detail_logit) > gap:
-                        return alpha * 0.7, beta * 1.1   # 轻微重构
+                        return alpha * 1.1, beta * 0.7
                     return alpha, beta
                 
                 def _safe_sharpen(self, probs, tau=0.10):
@@ -1948,58 +1953,46 @@ def get_unified_retriever():
                                 print(f"🔍 拓扑连续性prior: {struct_cand['id']} +{topo_boost:.3f}")
                             
                             fused_logit += topo_boost
-                            
-                            # 转回概率空间
-                            fused_prob = 1 / (1 + np.exp(-fused_logit))
-                            
-                            # 收集logit用于二次锐化
+
+                            # 🔧 FIX P1-6: 删除 per-candidate sigmoid (fused_prob = 1/(1+exp(-l)))
+                            # 那种做法把每个候选当独立二分类处理，所有候选的 sigmoid 输出加起来不等于 1，
+                            # 后续 _safe_sharpen 再当概率分布 softmax 在数学上不自洽。
+                            # 改成：循环里只收集 fused_logits，循环外对所有 logits 做一次 softmax(温度 T)。
                             fused_logits.append(fused_logit)
-                            
-                            # 创建融合后的候选
+
+                            # 创建融合后的候选（score 先占位 0.0，循环外 softmax 覆盖）
                             fused_cand = struct_cand.copy()
-                            fused_cand["score"] = fused_prob
-                            # 🔧 FIX: 保存原始的structure和detail分数
-                            fused_cand["structure_score"] = struct_cand["score"]  # 修复字段名
+                            fused_cand["score"] = 0.0
+                            fused_cand["structure_score"] = struct_cand["score"]
                             fused_cand["detail_score"] = detail_candidates[i]["score"] if i < len(detail_candidates) else 0.0
                             fused_cand["fusion_weights"] = {"alpha": alpha, "beta": beta, "gamma": self.gamma}
                             fused_cand["boost_value"] = boost_value
                             fused_cand["conflict_strategy"] = "conflict_gated" if conflict_detected else "normal"
-                            
+
                             fused_candidates.append(fused_cand)
 
-                        # 🔧 FIX P0-1/P0-2 配套：把两个通道的 top1 id 挂在融合 top1 候选上，
-                        # 供下游 calculate_calibrated_confidence_and_margin 计算 consistency。
-                        # 注意：fused_candidates 此时还未排序，所以挂在所有候选上，
-                        # 即使后续重排序也能在 top1 上读到（每个候选都带这个相同的元信息）。
+                        # 🔧 FIX P0-1/P0-2 配套：把两个通道的 top1 id 挂在融合候选上，
+                        # 供下游 calculate_calibrated_confidence_and_margin 计算 consistency
                         for fc in fused_candidates:
                             fc["_struct_top1_id"] = struct_top1_id
                             fc["_detail_top1_id"] = detail_top1_id
 
-                        # 🔧 FIX: 融合后二次锐化 + 拓扑先验
-                        if fused_logits and len(fused_logits) > 0:
-                            try:
-                                # 🔧 FIX: 使用更温和的初始温度，避免过度极端
-                                tau_fuse = 0.25  # 二次锐化温度（从0.10提升到0.25）
-                                print(f"🔧 融合后二次锐化: τ_fuse={tau_fuse}")
-                                
-                                # 应用安全的二次锐化函数（内部会动态调整温度）
-                                fused_probs = [cand["score"] for cand in fused_candidates]
-                                sharpened_probs = self._safe_sharpen(fused_probs, tau_fuse)
-                                
-                                # 更新候选分数
-                                if len(sharpened_probs) == len(fused_candidates):
-                                    for i, (cand, sharp_prob) in enumerate(zip(fused_candidates, sharpened_probs)):
-                                        old_score = cand["score"]
-                                        cand["score"] = float(sharp_prob)  # 确保是Python float
-                                        if abs(old_score - cand["score"]) > 0.01:
-                                            print(f"🔍 二次锐化: {cand['id']} {old_score:.3f} → {cand['score']:.3f}")
-                                else:
-                                    print(f"⚠️ 二次锐化数组长度不匹配: {len(sharpened_probs)} vs {len(fused_candidates)}")
-                            except Exception as e:
-                                print(f"⚠️ 二次锐化失败: {e}")
-                                # 继续使用原始分数，不中断流程
-                        
-                        print(f"🔧 Enhanced fusion completed: {len(fused_candidates)} candidates (fused scoring)")
+                        # 🔧 FIX P1-6: 对所有 fused_logits 做一次温度 softmax，得到合法概率分布（和为 1）
+                        # 论文 §3.4 Eq.(3): p_final_i = exp(logit_i / T) / Σ exp(logit_j / T)
+                        # 删除原 _safe_sharpen + clip[0.05, 0.8] 路径：那是为了修上一处 sigmoid 的副作用，
+                        # 现在源头修正了，二次锐化不再需要。
+                        if fused_logits:
+                            T = float(os.getenv("FUSION_TEMPERATURE", "0.25"))  # 论文 Eq.(3) 的 T
+                            logits_arr = np.asarray(fused_logits, dtype=np.float64)
+                            logits_arr = logits_arr - np.max(logits_arr)  # 数值稳定
+                            exp_logits = np.exp(logits_arr / max(T, 1e-6))
+                            denom = exp_logits.sum()
+                            probs = exp_logits / denom if denom > 0 else np.full_like(exp_logits, 1.0 / len(exp_logits))
+                            for cand, p in zip(fused_candidates, probs):
+                                cand["score"] = float(p)
+                            print(f"🔧 Fusion softmax: T={T}, top1_prob={probs.max():.4f}")
+
+                        print(f"🔧 Enhanced fusion completed: {len(fused_candidates)} candidates")
                         return fused_candidates
                         
                     except Exception as e:
@@ -2189,84 +2182,30 @@ def get_unified_retriever():
                         if not fused_candidates:
                             print("⚠️ Fusion failed")
                             return struct_candidates  # 回退到结构通道
-                        
-                        # 🔧 FIX: 添加多样性识别机制，避免总是识别同一个POI
-                        # 检查是否连续多次识别同一个POI
-                        current_top1_id = fused_candidates[0]['id']
-                        if hasattr(self, '_last_top1_id') and hasattr(self, '_top1_repeat_count'):
-                            if current_top1_id == self._last_top1_id:
-                                self._top1_repeat_count += 1
-                                # 如果连续识别超过3次，降低该POI的分数
-                                if self._top1_repeat_count > 3:
-                                    print(f"⚠️ 连续识别{self._top1_repeat_count}次{current_top1_id}，降低分数增加多样性")
-                                    for candidate in fused_candidates:
-                                        if candidate['id'] == current_top1_id:
-                                            candidate['score'] *= 0.7  # 降低30%分数
-                                            break
-                                    # 重新排序
-                                    fused_candidates.sort(key=lambda x: x["score"], reverse=True)
-                            else:
-                                self._top1_repeat_count = 1
-                        else:
-                            self._top1_repeat_count = 1
-                        
-                        self._last_top1_id = current_top1_id
-                        
+
+                        # 🔧 FIX P1-3: 删除"连续 >3 次识别同一 POI 就 ×0.7" 反多样性补丁。
+                        # 用户站在同一位置应该被稳定识别，不该被算法主动打分降级。
+                        # （配合内部 _calculate_node_score 里的 0.8 倍补丁也一起删，见 P1-3 第二处）
+
                         # 按融合分数排序
                         fused_candidates.sort(key=lambda x: x["score"], reverse=True)
-                        
-                        # 步骤C：输出置信度与margin（增强版）
-                        top1_score = fused_candidates[0]['score']
-                        top2_score = fused_candidates[1]['score'] if len(fused_candidates) > 1 else 0
-                        
-                        # 🔧 FIX: 改进confidence计算，避免过于固定
-                        # 基于margin和top1_score的动态confidence计算
-                        base_margin = top1_score - top2_score
-                        
-                        # 动态confidence：结合margin和top1_score
-                        if base_margin > 0.3:  # 高margin时给予高confidence
-                            confidence = min(0.95, top1_score * 0.9 + base_margin * 0.3)
-                        elif base_margin > 0.1:  # 中等margin时给予中等confidence
-                            confidence = min(0.85, top1_score * 0.8 + base_margin * 0.2)
-                        else:  # 低margin时降低confidence
-                            confidence = max(0.5, top1_score * 0.6 + base_margin * 0.1)
-                        
-                        # 增强margin计算：使用指数放大和连续性boost
-                        # 连续性boost增强margin
-                        top1_boost = fused_candidates[0].get('boost_value', 0.0)
-                        margin_boost = top1_boost * 0.3  # boost对margin的贡献
-                        
-                        # 指数放大margin（让差异更明显）
-                        enhanced_margin = base_margin * (1.0 + margin_boost)
-                        if enhanced_margin > 0:
-                            enhanced_margin = enhanced_margin ** 0.8  # 指数0.8，让差异更突出
-                        
-                        margin = enhanced_margin
-                        
-                        # 🔧 FIX: 更合理的confidence和margin范围
-                        confidence = max(0.3, min(0.95, confidence))  # 允许更低的confidence
-                        margin = max(0.02, min(0.9, margin))  # 允许更低的margin
-                        
-                        print(f"✅ Enhanced dual-channel retrieval completed (Margin Boost Mode):")
-                        print(f"   Top1: {fused_candidates[0]['id']} (score: {top1_score:.4f})")
-                        if len(fused_candidates) > 1:
-                            print(f"   Top2: {fused_candidates[1]['id']} (score: {top2_score:.4f})")
-                            print(f"   Base margin: {base_margin:.4f}")
-                            print(f"   Boost value: {top1_boost:.4f}")
-                            print(f"   Enhanced margin: {margin:.4f}")
-                        print(f"   Confidence: {confidence:.4f}")
-                        print(f"   Margin boost: exponential + continuity boost applied")
-                        
-                        # 为每个候选添加confidence和margin信息
-                        for i, candidate in enumerate(fused_candidates):
-                            candidate["confidence"] = confidence if i == 0 else confidence * 0.8
-                            candidate["margin"] = margin
+
+                        # 🔧 FIX P1-1: 删除 retriever 内部冗余的 confidence/margin 计算
+                        # （原代码 30 行：分段动态公式 + 指数放大 + clip，本来就被外部
+                        # calculate_calibrated_confidence_and_margin 完全覆盖，是 dead path）。
+                        # retriever 只负责返回排序好的候选 + score；置信度由统一的 calibrator 算。
+                        for candidate in fused_candidates:
                             candidate["retrieval_method"] = "enhanced_dual_channel_fusion"
-                            candidate["has_detail"] = has_detail_data  # 添加detail可用性标记
-                        
-                        # 修复：确保返回的每个candidate都有正确的has_detail标记
+                            candidate["has_detail"] = has_detail_data
+
+                        if fused_candidates:
+                            top1_score = fused_candidates[0]['score']
+                            top2_score = fused_candidates[1]['score'] if len(fused_candidates) > 1 else 0.0
+                            print(f"✅ Enhanced dual-channel retrieval completed: "
+                                  f"top1={fused_candidates[0]['id']} (score={top1_score:.4f}), "
+                                  f"top2_score={top2_score:.4f}, raw_margin={top1_score - top2_score:.4f}")
                         print(f"🔧 Final candidates prepared: {len(fused_candidates)} with has_detail={has_detail_data}")
-                        
+
                         return fused_candidates
                         
                     except Exception as e:
@@ -2287,25 +2226,23 @@ def get_unified_retriever():
                         
                         print(f"🔍 Reading structure map from: {textmap_file}")
                         
-                        # 读取textmap文件 - 支持JSON和JSONL两种格式
+                        # 读取textmap文件
+                        # 🔧 FIX P1-4: 原 fallback "只读第一行" 是个 latent bug
+                        # （如果未来文件变成真正的多行 JSONL，会静默丢失 99% 数据）。
+                        # 现在结构文件就是单行 JSON，json.load 走得通；
+                        # 如果格式坏了直接报错让人修文件，不再静默读半个。
                         textmap_data = None
                         try:
-                            # 首先尝试作为标准JSON读取
                             with open(textmap_file, 'r', encoding='utf-8') as f:
                                 textmap_data = json.load(f)
-                                print(f"🔍 成功读取为标准JSON格式")
-                        except json.JSONDecodeError:
-                            # 如果失败，尝试作为JSONL读取
-                            try:
-                                with open(textmap_file, 'r', encoding='utf-8') as f:
-                                    for line in f:
-                                        if line.strip():
-                                            textmap_data = json.loads(line)
-                                            break  # 只读取第一行
-                                print(f"🔍 成功读取为JSONL格式")
-                            except Exception as e:
-                                print(f"⚠️ 无法读取文件: {e}")
-                                return []
+                                print(f"🔍 成功读取结构文件: {textmap_file}")
+                        except json.JSONDecodeError as e:
+                            print(f"❌ 结构文件 JSON 解析失败: {textmap_file}: {e}")
+                            print(f"   提示：本函数期望文件是单个 JSON object（含 input.topology.nodes/edges）")
+                            return []
+                        except Exception as e:
+                            print(f"❌ 无法读取结构文件: {e}")
+                            return []
                         
                         if not textmap_data:
                             print(f"⚠️ No data found in {textmap_file}")
@@ -2490,8 +2427,9 @@ def get_unified_retriever():
                     for feature in unique_features:
                         if any(word in caption_lower for word in feature.lower().split()):
                             score += 0.03  # 每个匹配特征+0.03
-                    
-                    return min(1.0, score)  # 限制最大分数为1.0
+
+                    # 🔧 FIX P1-7: 去掉 min(1.0, score) 上限（与 _calculate_node_score 一致）
+                    return score
                 
                 def _calculate_node_score(self, node, caption_lower):
                     """计算节点的检索分数（结构通道）- 增强版"""
@@ -2578,11 +2516,11 @@ def get_unified_retriever():
                                 score += 0.25  # 空间概念语义匹配给予额外权重
                                 break
                     
-                    # 🔧 FIX: 添加多样性惩罚，避免总是选择同一个POI
-                    if hasattr(self, '_last_top1_id') and node.get("id") == getattr(self, '_last_top1_id', None):
-                        score *= 0.8  # 连续选择同一POI时降低20%分数
-                    
-                    return min(1.0, score)  # 限制最大分数为1.0
+                    # 🔧 FIX P1-3: 删除"上一次 top1 自动 ×0.8" 多样性惩罚补丁。
+                    # 跟外层 ×0.7 补丁叠加会让稳定正确的预测被压到 0.56，反而触发 low_conf。
+                    # 🔧 FIX P1-7: 去掉 min(1.0, score) 硬上限。让 raw score 累积反映真实匹配强度，
+                    # 多个高分候选不再被压成 1.0 ties（之前会导致 margin=0 触发误判低置信）。
+                    return score
                 
                 def _semantic_deduplication(self, candidates, caption_lower):
                     """语义去重：合并语义相似的节点，避免返回重复的TV screen等"""
@@ -2766,8 +2704,11 @@ def get_unified_retriever():
                             if any(keyword in detail_text for keyword in keywords):
                                 score += 0.2  # 空间概念语义匹配给予额外权重
                                 break
-                    
-                    return min(1.0, score)  # 限制最大分数为1.0
+
+                    # 🔧 FIX P1-7: 去掉 min(1.0, score) 上限
+                    # ⚠️ NOTE: 本函数与 2429 行的 _calculate_detail_score 重复定义，
+                    # Python 会以本（后定义）版本为准。重构去重留给 Stage 3。
+                    return score
             
             UNIFIED_RETRIEVER = EnhancedDualChannelRetriever()
             
