@@ -16,8 +16,16 @@ import io
 
 # ✅ New: DG Optimization Modules
 # from user_needs_validator import UserNeedsValidator, UserNeed, DesignGoal
-# from accessibility_checker import AccessibilityChecker
-# from indoor_gml_generator import IndoorGMLGenerator
+try:
+    from accessibility_checker import AccessibilityChecker
+except Exception as _e:
+    AccessibilityChecker = None
+    print(f"⚠️ AccessibilityChecker import failed: {_e}")
+try:
+    from indoor_gml_generator import IndoorGMLGenerator
+except Exception as _e:
+    IndoorGMLGenerator = None
+    print(f"⚠️ IndoorGMLGenerator import failed: {_e}")
 # from enhanced_metrics_collector import EnhancedMetricsCollector, MetricType, DataPriority, CollectionConfig
 
 # 空实现，避免NameError
@@ -52,7 +60,11 @@ def get_next_action(*args, **kwargs):
 # 添加到全局命名空间
 globals()['get_location_description'] = get_location_description
 globals()['get_next_action'] = get_next_action
-# from dg_evaluation_enhancement import DGEvaluationManager
+try:
+    from dg_evaluation_enhancement import DGEvaluationManager
+except Exception as _e:
+    DGEvaluationManager = None
+    print(f"⚠️ DGEvaluationManager import failed: {_e}")
 
 # Note: If you encounter Hugging Face authentication issues, you can:
 # 1. Set HF_TOKEN environment variable in your .env file
@@ -482,15 +494,17 @@ def normalize_candidate(c):
     # 兜底：非法输入
     return str(c), 0.0, False
 
-def enhanced_ft_retrieval(caption: str, retriever, site_id: str, detailed_data: list) -> list:
-    """增强：改进的FT检索，使用增强的双通道融合策略"""
+def enhanced_ft_retrieval(caption: str, retriever, site_id: str, detailed_data: list,
+                          session_id: Optional[str] = None) -> list:
+    """增强：改进的FT检索，使用增强的双通道融合策略。
+    session_id 透传到 retriever.retrieve()，让 DG2 区分度打点能落到正确会话。"""
     print(f"🏗️ Enhanced Dual-Channel Fusion retrieval for {site_id}")
-    
+
     try:
         # 使用增强的双通道检索器
         try:
             # 获取融合后的候选列表
-            candidates = retriever.retrieve(caption, top_k=10, scene_filter=site_id)
+            candidates = retriever.retrieve(caption, top_k=10, scene_filter=site_id, session_id=session_id)
             
             if not candidates:
                 print("❌ 无法获取候选列表")
@@ -961,27 +975,42 @@ LOG_SWITCH = defaultdict(lambda: {"enabled": False, "run_id": ""})
 # Enhanced session management with location tracking
 SESSIONS: Dict[str, Dict[str, Any]] = {}
 
-# ✅ New: DG Optimization Module Instances
-# if ENABLE_DG_EVALUATION:
-#     dg_evaluator = DGEvaluationManager()
-#     print("✅ DG Evaluation Manager initialized")
-# else:
-#     dg_evaluator = None
-#     print("⚠️ DG Evaluation Manager disabled")
+# ✅ DG Optimization Module Instances
+if ENABLE_DG_EVALUATION and DGEvaluationManager is not None:
+    try:
+        dg_evaluator = DGEvaluationManager()
+        print("✅ DG Evaluation Manager initialized")
+    except Exception as _e:
+        dg_evaluator = None
+        print(f"⚠️ DG Evaluation Manager init failed: {_e}")
+else:
+    dg_evaluator = None
+    print("⚠️ DG Evaluation Manager disabled")
 
-# if ENABLE_ACCESSIBILITY_CHECKING:
-#     accessibility_checker = AccessibilityChecker()
-#     print("✅ Accessibility Checker initialized")
-# else:
-#     accessibility_checker = None
-#     print("⚠️ Accessibility Checker disabled")
+if ENABLE_ACCESSIBILITY_CHECKING and AccessibilityChecker is not None:
+    try:
+        accessibility_checker = AccessibilityChecker()
+        print("✅ Accessibility Checker initialized")
+    except Exception as _e:
+        accessibility_checker = None
+        print(f"⚠️ Accessibility Checker init failed: {_e}")
+else:
+    accessibility_checker = None
+    print("⚠️ Accessibility Checker disabled")
 
-# if ENABLE_INDOOR_GML:
-#     indoor_gml_generator = IndoorGMLGenerator()
-#     print("✅ IndoorGML Generator initialized")
-# else:
-#     indoor_gml_generator = None
-#     print("⚠️ IndoorGML Generator disabled")
+if ENABLE_INDOOR_GML and IndoorGMLGenerator is not None:
+    try:
+        indoor_gml_generator = IndoorGMLGenerator()
+        print("✅ IndoorGML Generator initialized")
+    except Exception as _e:
+        indoor_gml_generator = None
+        print(f"⚠️ IndoorGML Generator init failed: {_e}")
+else:
+    indoor_gml_generator = None
+    print("⚠️ IndoorGML Generator disabled")
+
+# Not wired yet — kept as None so /health/enhanced and `if user_needs_validator:` guards don't NameError
+user_needs_validator = None
 
 # # Initialize enhanced metrics collector
 # metrics_collector_config = CollectionConfig(
@@ -1796,12 +1825,13 @@ def get_unified_retriever():
                     try:
                         # 🔧 NEW: 反证惩罚机制
                         def apply_negatives(score, node_meta, query_text, penalty=0.15):
-                            """应用反证惩罚：如果查询文本命中节点的negative提示，则降低分数"""
+                            """应用反证惩罚：如果查询文本命中节点的negative提示，则降低分数。
+                            返回 (新分数, 命中数)，命中数供 DG2 区分度打点使用。"""
                             neg = set(node_meta.get("retrieval", {}).get("negative", []))
                             hit = sum(1 for n in neg if n in query_text.lower())
                             if hit > 0:
                                 print(f"🔍 反证惩罚: {node_meta.get('id', 'unknown')} 命中 {hit} 个negative提示，惩罚: {hit * penalty:.3f}")
-                            return score - hit * penalty
+                            return score - hit * penalty, hit
                         
                         # 🔧 NEW: 结构通道稳态词过滤（不污染原始文本）
                         MOVABLE = {"suitcase", "bag", "backpack", "person", "cup", "bottle", "laptop", "phone", "book"}
@@ -1835,11 +1865,13 @@ def get_unified_retriever():
                         # 对结构通道分数应用反证惩罚 + 稳态过滤
                         caption_lower = caption.lower()
                         stable_caption = stable_query(caption)  # 结构通道用稳态版本
-                        
+                        stable_query_applied = (stable_caption != caption_lower)
+
                         for i, struct_cand in enumerate(struct_candidates):
                             original_score = struct_cand['score']
                             # 先应用稳态过滤（在反证惩罚之前）
-                            penalized_score = apply_negatives(original_score, struct_cand, stable_caption)
+                            penalized_score, neg_hits = apply_negatives(original_score, struct_cand, stable_caption)
+                            struct_cand['_neg_hits'] = neg_hits
                             if penalized_score != original_score:
                                 print(f"🔍 结构通道反证惩罚: {struct_cand['id']} {original_score:.3f} → {penalized_score:.3f}")
                                 struct_cand['score'] = penalized_score
@@ -1968,6 +2000,9 @@ def get_unified_retriever():
                             fused_cand["fusion_weights"] = {"alpha": alpha, "beta": beta, "gamma": self.gamma}
                             fused_cand["boost_value"] = boost_value
                             fused_cand["conflict_strategy"] = "conflict_gated" if conflict_detected else "normal"
+                            # DG2 区分度打点用：把 neg_hits + stable_query_applied 带到下游
+                            fused_cand["_neg_hits"] = struct_cand.get("_neg_hits", 0)
+                            fused_cand["_stable_query_applied"] = stable_query_applied
 
                             fused_candidates.append(fused_cand)
 
@@ -2189,6 +2224,29 @@ def get_unified_retriever():
 
                         # 按融合分数排序
                         fused_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+                        # 🆕 DG2 区分度打点：记录每次融合的 top1/top2/margin/通道一致性等
+                        if dg_evaluator is not None and fused_candidates:
+                            try:
+                                top1 = fused_candidates[0]
+                                top2 = fused_candidates[1] if len(fused_candidates) > 1 else None
+                                dg_evaluator.dg2_evaluator.record_discrimination_event(
+                                    session_id=(getattr(self, "_session_id", None) or "anonymous"),
+                                    query=caption,
+                                    top1_id=top1.get("id"),
+                                    top1_score=top1.get("score", 0.0),
+                                    top2_id=(top2.get("id") if top2 else None),
+                                    top2_score=(top2.get("score", 0.0) if top2 else 0.0),
+                                    struct_top1_id=top1.get("_struct_top1_id"),
+                                    detail_top1_id=top1.get("_detail_top1_id"),
+                                    struct_score=top1.get("structure_score", 0.0),
+                                    detail_score=top1.get("detail_score", 0.0),
+                                    neg_hits=int(top1.get("_neg_hits", 0)),
+                                    stable_query_applied=bool(top1.get("_stable_query_applied", False)),
+                                    scene_filter=scene_filter,
+                                )
+                            except Exception as _e:
+                                print(f"⚠️ discrimination event record failed: {_e}")
 
                         # 🔧 FIX P1-1: 删除 retriever 内部冗余的 confidence/margin 计算
                         # （原代码 30 行：分段动态公式 + 指数放大 + clip，本来就被外部
@@ -3346,7 +3404,7 @@ async def api_locate(
                     print(f"⚠️ Detail数据加载失败！")
                 
                 # Use layered fusion retrieval: Structure-only scoring + Detail metadata attachment
-                candidates = enhanced_ft_retrieval(cap, retriever, site_id, detailed_data)
+                candidates = enhanced_ft_retrieval(cap, retriever, site_id, detailed_data, session_id=session_id)
             else:
                 # Standard retrieval for other modes (base/4o)
                 matching_data = get_matching_data(provider, site_id)
@@ -4701,6 +4759,29 @@ async def get_metrics_collection_stats():
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get collection stats: {str(e)}")
+
+@app.get("/api/dg/metrics/discrimination/{session_id}")
+async def get_discrimination_metrics(session_id: str, tie_threshold: float = 0.05,
+                                     include_events: bool = False, limit: int = 100):
+    """检索区分度（discrimination）会话级指标 + 可选的原始事件列表。
+    tie_threshold: 把 margin<该阈值的事件视为 tie（区分度差）。
+    include_events=true 时返回 raw events（最多 `limit` 条，按时间倒序）。
+    传 session_id='all' 聚合全部 session。
+    """
+    if dg_evaluator is None:
+        raise HTTPException(status_code=503, detail="DG evaluator not initialized")
+    sid = None if session_id == "all" else session_id
+    try:
+        stats = dg_evaluator.dg2_evaluator.get_discrimination_stats(sid, tie_threshold=tie_threshold)
+        out = {"stats": stats}
+        if include_events:
+            evts = dg_evaluator.dg2_evaluator.discrimination_events
+            if sid is not None:
+                evts = [e for e in evts if e["session_id"] == sid]
+            out["events"] = list(reversed(evts))[:max(0, int(limit))]
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute discrimination stats: {e}")
 
 @app.post("/api/dg/metrics/session/{session_id}/close")
 async def close_metrics_session(session_id: str):

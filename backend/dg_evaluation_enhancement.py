@@ -116,12 +116,82 @@ class HardwareDependencyEvaluator:
 
 class SemanticMapEvaluator:
     """语义地图评估器"""
-    
+
     def __init__(self):
         self.landmark_recall_tests = []
         self.instruction_clarity_scores = []
         self.error_attribution_log = []
-    
+        # 检索区分度事件：在 _enhanced_fusion 出口处由 retriever 写入
+        self.discrimination_events: List[Dict[str, Any]] = []
+
+    def record_discrimination_event(self, session_id: str, query: str,
+                                    top1_id: str, top1_score: float,
+                                    top2_id: Optional[str], top2_score: float,
+                                    struct_top1_id: Optional[str], detail_top1_id: Optional[str],
+                                    struct_score: float, detail_score: float,
+                                    neg_hits: int, stable_query_applied: bool,
+                                    scene_filter: Optional[str] = None,
+                                    extra: Optional[Dict[str, Any]] = None) -> None:
+        """记录一次双通道融合的区分度事件。
+        margin = top1 - top2（softmax 之后），越大区分度越好；
+        channels_agree 用于判断结构/细节通道是否在 top1 上一致。
+        """
+        margin = float(top1_score) - float(top2_score) if top2_id is not None else float(top1_score)
+        channels_agree = (struct_top1_id is not None and detail_top1_id is not None
+                          and struct_top1_id == detail_top1_id)
+        event = {
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "scene_filter": scene_filter,
+            "query": query,
+            "top1_id": top1_id,
+            "top1_score": float(top1_score),
+            "top2_id": top2_id,
+            "top2_score": float(top2_score) if top2_id is not None else None,
+            "margin": margin,
+            "struct_top1_id": struct_top1_id,
+            "detail_top1_id": detail_top1_id,
+            "struct_score": float(struct_score),
+            "detail_score": float(detail_score),
+            "neg_hits": int(neg_hits),
+            "stable_query_applied": bool(stable_query_applied),
+            "channels_agree": channels_agree,
+        }
+        if extra:
+            event["extra"] = extra
+        self.discrimination_events.append(event)
+
+    def get_discrimination_stats(self, session_id: Optional[str] = None,
+                                 tie_threshold: float = 0.05) -> Dict[str, Any]:
+        """聚合区分度统计：margin 直方、tie_rate(margin<阈值)、通道一致率等。"""
+        evts = self.discrimination_events
+        if session_id is not None:
+            evts = [e for e in evts if e["session_id"] == session_id]
+        n = len(evts)
+        if n == 0:
+            return {"session_id": session_id, "n": 0, "status": "no_data"}
+        margins = sorted(e["margin"] for e in evts)
+        def _pct(p: float) -> float:
+            if not margins:
+                return 0.0
+            k = max(0, min(len(margins) - 1, int(round(p * (len(margins) - 1)))))
+            return float(margins[k])
+        agree = sum(1 for e in evts if e["channels_agree"])
+        ties = sum(1 for e in evts if e["margin"] < tie_threshold)
+        neg_hit_rate = sum(1 for e in evts if e["neg_hits"] > 0) / n
+        return {
+            "session_id": session_id,
+            "n": n,
+            "tie_threshold": tie_threshold,
+            "avg_margin": sum(margins) / n,
+            "p10_margin": _pct(0.10),
+            "p50_margin": _pct(0.50),
+            "p90_margin": _pct(0.90),
+            "tie_rate": ties / n,
+            "channels_agree_rate": agree / n,
+            "neg_hit_rate": neg_hit_rate,
+        }
+
     def record_landmark_recall(self, session_id: str, task_id: str,
                               landmarks_presented: List[str], landmarks_recalled: List[str],
                               time_delay: float):
@@ -534,24 +604,41 @@ class DGEvaluationManager:
         }
     
     def _analyze_dg2(self, session_id: str) -> Dict[str, Any]:
-        """分析DG2指标"""
+        """分析DG2指标。除了人评的 landmark_recall / instruction_clarity，
+        还纳入检索区分度（discrimination）作为自动客观指标。"""
         recall_tests = [r for r in self.dg2_evaluator.landmark_recall_tests if r["session_id"] == session_id]
         clarity_scores = [r for r in self.dg2_evaluator.instruction_clarity_scores if r["session_id"] == session_id]
-        
-        if not recall_tests and not clarity_scores:
+        disc_stats = self.dg2_evaluator.get_discrimination_stats(session_id)
+
+        if not recall_tests and not clarity_scores and disc_stats.get("n", 0) == 0:
             return {"score": 0.0, "status": "no_data", "details": "No semantic map data available"}
-        
+
         avg_recall_rate = sum(r["recall_rate"] for r in recall_tests) / len(recall_tests) if recall_tests else 0
         avg_clarity = sum(r["overall_score"] for r in clarity_scores) / len(clarity_scores) if clarity_scores else 0
-        
-        # 综合分数 (0-10)
-        score = (avg_recall_rate * 5 + avg_clarity * 2) / 2
-        
+
+        # 区分度子分数 (0-10)：用 avg_margin 拉成 0~10（margin≥0.5 视为满分），
+        # 再用 tie_rate 做惩罚（tie 越多越扣分）。无数据则不影响。
+        n = disc_stats.get("n", 0)
+        if n > 0:
+            avg_margin = disc_stats.get("avg_margin", 0.0)
+            tie_rate = disc_stats.get("tie_rate", 1.0)
+            disc_score = max(0.0, min(10.0, avg_margin / 0.5 * 10.0)) * (1.0 - tie_rate)
+        else:
+            disc_score = None
+
+        # 综合分数 (0-10)：recall + clarity 维持原权重；有 disc 数据时把它加入加权
+        if disc_score is not None:
+            score = (avg_recall_rate * 5 + avg_clarity * 2 + disc_score) / 3
+        else:
+            score = (avg_recall_rate * 5 + avg_clarity * 2) / 2
+
         return {
             "score": score,
             "status": "analyzed",
             "average_recall_rate": avg_recall_rate,
             "average_clarity_score": avg_clarity,
+            "discrimination": disc_stats,
+            "discrimination_score": disc_score,
             "recommendations": self._get_dg2_recommendations(score, avg_recall_rate, avg_clarity)
         }
     

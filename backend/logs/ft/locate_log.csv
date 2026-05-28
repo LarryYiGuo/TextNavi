@@ -1,3 +1,9 @@
 site_id,run_id,ts_iso,req_id,session_id,provider,phase,caption,top1_id,top1_score,top2_id,top2_score,margin,gt_node_id,hit_top1,hit_top2,hit_hop1,low_conf,low_conf_rule,client_start_ms,server_recv_ms,server_resp_ms
 SCENE_A_MS,WARMUP,2025-08-15T14:39:38.740920,128438a0-7a26-435e-afc2-ad434707a8f7,T06,ft,warmup,First photo - preset output,,,,,,,,,,,,,,1755268777192,1755268777445,1755268778740
 SCENE_A_MS,FT-SCENE_A_MS-1755268778730,2025-08-15T14:40:13.060163,cb526407-69ee-45e1-b3d6-ea0ffcc70ab1,T06,ft,trial,there is a black machine with a red handle on a table,Sense_A_4o_0,0.406818,Sense_A_FT_0,0.306526,0.100292,,,,,false,,1755268807713,1755268807924,1755268813059
+SCENE_A_MS,WARMUP,2026-05-27T15:19:34.688726,8bfcfaa9-30f8-4f06-901d-ab1eb95fcf84,smoke_1779895168,ft,warmup,First photo - preset output,,,,,,,,,,,,,1779895168930,1779895174688
+SCENE_A_MS,WARMUP,2026-05-27T15:19:36.302366,44aec19b-c797-46a0-967a-12ba94b7d426,smoke_1779895168,ft,warmup,First photo - preset output,,,,,,,,,,,,,,,1779895174712,1779895176302
+SCENE_A_MS,WARMUP,2026-05-27T15:34:51.774937,26c84428-9457-483d-9dcc-ac55d41857f7,smoke_1779896090,ft,warmup,First photo - preset output,,,,,,,,,,,,,,,1779896090111,1779896091774
+SCENE_A_MS,WARMUP,2026-05-27T15:37:22.299730,c5cb5935-cda2-4125-9a39-3870b391e5bc,dbg_1779896238,ft,warmup,First photo - preset output,,,,,,,,,,,,,,,1779896238615,1779896242299
+SCENE_A_MS,WARMUP,2026-05-27T15:38:18.347608,b6b988ea-9824-4d7f-862f-c73550cfed08,dbg2_1779896296,ft,warmup,First photo - preset output,,,,,,,,,,,,,,,1779896296598,1779896298347
+SCENE_A_MS,WARMUP,2026-05-27T15:40:11.982400,71318c79-9b8e-410c-8ec6-95479e67dd81,final_1779896410,ft,warmup,First photo - preset output,,,,,,,,,,,,,,,1779896410176,1779896411982
