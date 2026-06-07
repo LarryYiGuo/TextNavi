@@ -1,0 +1,781 @@
+[
+  {
+    "label": "baseline",
+    "env": {},
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/baseline_1780814220.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g01_a0.5_t0.15_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g01_a0.5_t0.15_n0.05_1780814299.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g02_a0.5_t0.15_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g02_a0.5_t0.15_n0.15_1780814380.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g03_a0.5_t0.15_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g03_a0.5_t0.15_n0.3_1780814458.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g04_a0.5_t0.25_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g04_a0.5_t0.25_n0.05_1780814537.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g05_a0.5_t0.25_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g05_a0.5_t0.25_n0.15_1780814619.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g06_a0.5_t0.25_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g06_a0.5_t0.25_n0.3_1780814700.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g07_a0.5_t0.4_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g07_a0.5_t0.4_n0.05_1780814779.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g08_a0.5_t0.4_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g08_a0.5_t0.4_n0.15_1780814857.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g09_a0.5_t0.4_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.5,
+      "FUSION_BETA_FB": 0.5,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g09_a0.5_t0.4_n0.3_1780814934.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g10_a0.65_t0.15_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g10_a0.65_t0.15_n0.05_1780815011.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g11_a0.65_t0.15_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g11_a0.65_t0.15_n0.15_1780815088.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g12_a0.65_t0.15_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g12_a0.65_t0.15_n0.3_1780815167.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g13_a0.65_t0.25_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g13_a0.65_t0.25_n0.05_1780815247.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g14_a0.65_t0.25_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g14_a0.65_t0.25_n0.15_1780815329.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g15_a0.65_t0.25_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g15_a0.65_t0.25_n0.3_1780815410.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g16_a0.65_t0.4_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g16_a0.65_t0.4_n0.05_1780815492.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g17_a0.65_t0.4_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g17_a0.65_t0.4_n0.15_1780815573.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g18_a0.65_t0.4_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.65,
+      "FUSION_BETA_FB": 0.35,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g18_a0.65_t0.4_n0.3_1780815652.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g19_a0.8_t0.15_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g19_a0.8_t0.15_n0.05_1780815730.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g20_a0.8_t0.15_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g20_a0.8_t0.15_n0.15_1780815806.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g21_a0.8_t0.15_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.15,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8965831781343105,
+    "mean_margin": 0.7686113742488601,
+    "median_margin": 0.9835519393504086,
+    "low_conf_rate": 0.05714285714285714,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g21_a0.8_t0.15_n0.3_1780815884.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g22_a0.8_t0.25_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g22_a0.8_t0.25_n0.05_1780815962.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g23_a0.8_t0.25_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g23_a0.8_t0.25_n0.15_1780816041.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g24_a0.8_t0.25_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.25,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.8448323451743488,
+    "mean_margin": 0.6636880427585916,
+    "median_margin": 0.870069824421834,
+    "low_conf_rate": 0.11428571428571428,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g24_a0.8_t0.25_n0.3_1780816119.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g25_a0.8_t0.4_n0.05",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.05
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g25_a0.8_t0.4_n0.05_1780816197.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g26_a0.8_t0.4_n0.15",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.15
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g26_a0.8_t0.4_n0.15_1780816279.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  },
+  {
+    "label": "g27_a0.8_t0.4_n0.3",
+    "env": {
+      "FUSION_ALPHA_FB": 0.8,
+      "FUSION_BETA_FB": 0.2,
+      "FUSION_TEMPERATURE": 0.4,
+      "FUSION_NEG_PENALTY": 0.3
+    },
+    "n": 35,
+    "top1_acc": 0.08571428571428572,
+    "hits": 3,
+    "mean_conf": 0.7804160673471182,
+    "mean_margin": 0.5015608338958119,
+    "median_margin": 0.6044442897590644,
+    "low_conf_rate": 0.2,
+    "log": "/Users/larryguo/HCI/HCI_Project/VLN4VI/Scripts/TextNavi/backend/logs/sweep/g27_a0.8_t0.4_n0.3_1780816359.log",
+    "pred_dist": {
+      "poi02_green_trash_bin": 2,
+      "poi05_desk_3d_printer": 6,
+      "poi01_entrance_glass_door": 2,
+      "poi09_qr_bookshelf": 8,
+      "poi06_small_open_3d_printer": 1,
+      "poi14_main_work_table": 3,
+      "poi19_purple_chair_filming_table": 9,
+      "poi11_di_hub_glass_box": 2,
+      "poi15_floor_to_ceiling_windows": 2
+    }
+  }
+]

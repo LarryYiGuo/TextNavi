@@ -4,15 +4,16 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import requests
 from datetime import datetime
 from collections import defaultdict
-import math
 
 # Local BLIP model imports
 from transformers import BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
-import io
+
+# Note: dropped unused top-level imports (`requests`, top-level `math`, duplicate `io`)
+# during the 2026-06-04 cleanup. `math` is still re-imported locally inside
+# `_enhanced_fusion`'s topo helpers where needed.
 
 # ✅ New: DG Optimization Modules
 # from user_needs_validator import UserNeedsValidator, UserNeed, DesignGoal
@@ -28,13 +29,24 @@ except Exception as _e:
     print(f"⚠️ IndoorGMLGenerator import failed: {_e}")
 # from enhanced_metrics_collector import EnhancedMetricsCollector, MetricType, DataPriority, CollectionConfig
 
-# 空实现，避免NameError
-def enhanced_metrics_collector(*args, **kwargs):
-    """空实现，避免NameError"""
-    return None
+# Not wired yet — kept as None (not a no-op function) so /health/enhanced reports it
+# honestly as "disabled" and the `if enhanced_metrics_collector:` guards short-circuit.
+# The `.collect_real_time_data(...)` call sites are already wrapped in try/except.
+enhanced_metrics_collector = None
 
-# 添加到全局命名空间
-globals()['enhanced_metrics_collector'] = enhanced_metrics_collector
+# MetricType / DataPriority / UserNeed are normally exported from the matching DG
+# modules. Provide None placeholders so static name lookup doesn't fail in the
+# (currently dead) call sites; `if enhanced_metrics_collector:` / `if user_needs_validator:`
+# guards prevent these from being touched at runtime when those modules are disabled.
+try:
+    from enhanced_metrics_collector import MetricType, DataPriority  # type: ignore
+except Exception:
+    MetricType = None
+    DataPriority = None
+try:
+    from user_needs_validator import UserNeed  # type: ignore
+except Exception:
+    UserNeed = None
 
 def get_location_description(node_id, detail_items=None):
     """获取位置描述，避免参数错误"""
@@ -53,9 +65,13 @@ def get_location_description(node_id, detail_items=None):
     except Exception as e:
         return f"Current location: {node_id}."
 
-def get_next_action(*args, **kwargs):
-    """避免 name 'get_next_action' is not defined"""
-    return {"say": "Hold on the current spot. If you need guidance, face the yellow line and follow it forward."}
+def get_next_action(node_id=None, site_id=None, lang="en", *args, **kwargs):
+    """Next-action prompt. Previously a fixed yellow-line phrase emitted for every
+    photo regardless of node/scene — replaced with an empty string so the response
+    field stays for FE compatibility but no longer broadcasts a misleading instruction.
+    The real per-node turn+step direction is already in `navigation_instruction`.
+    """
+    return {"say": ""}
 
 # 添加到全局命名空间
 globals()['get_location_description'] = get_location_description
@@ -179,33 +195,6 @@ def get_detailed_matching_data(site_id: str) -> list:
         print(f"⚠️ Failed to load detailed descriptions from {filename}: {e}")
         return []
 
-def validate_location_continuity(session_id: str, new_location: str, previous_location: str = None) -> dict:
-    """Validate if new location is continuous with previous location"""
-    if not previous_location:
-        return {"valid": True, "reason": "first_location", "confidence_boost": 0.0}
-    
-    # Simple continuity check: check if location names are similar or adjacent
-    # This can be enhanced with more complex validation based on actual scene topology
-    
-    # Check if it's the same location
-    if new_location == previous_location:
-        return {"valid": True, "reason": "same_location", "confidence_boost": 0.1}
-    
-    # Check if it's an adjacent location (this needs to be defined based on actual scene)
-    adjacent_locations = {
-        "entrance": ["chair", "3d_printer", "glass_door"],
-        "chair": ["entrance", "3d_printer", "glass_door"],
-        "3d_printer": ["chair", "glass_door", "bookshelf"],
-        "glass_door": ["3d_printer", "bookshelf", "atrium"],
-        "bookshelf": ["3d_printer", "glass_door", "atrium"],
-        "atrium": ["glass_door", "bookshelf"]
-    }
-    
-    if previous_location in adjacent_locations and new_location in adjacent_locations[previous_location]:
-        return {"valid": True, "reason": "adjacent_location", "confidence_boost": 0.05}
-    
-    # If location change is significant, additional validation may be needed
-    return {"valid": True, "reason": "location_change", "confidence_boost": -0.05}
 
 def track_orientation(session_id: str, caption: str, predicted_location: str) -> dict:
     """Track user orientation changes"""
@@ -246,135 +235,32 @@ def update_session_location(session_id: str, new_location: str, confidence: floa
         return
     
     session = SESSIONS[session_id]
-    previous_location = session.get("current_location")
-    
-    # Validate location continuity
-    continuity_check = validate_location_continuity(session_id, new_location, previous_location)
-    
+
     # Update current location
     session["current_location"] = new_location
     session["last_update_time"] = datetime.utcnow().isoformat()
-    
-    # Add to history records
+
+    # Add to history records (continuity_* fields removed — validate_location_continuity
+    # used a generic-name adjacency table that never matched real node IDs; its output
+    # was recorded but never read. The real continuity boost lives in the retriever pipeline.)
     location_record = {
         "location": new_location,
         "confidence": confidence,
         "timestamp": datetime.utcnow().isoformat(),
-        "continuity_valid": continuity_check["valid"],
-        "continuity_reason": continuity_check["reason"],
-        "confidence_boost": continuity_check["confidence_boost"]
     }
-    
+
     session["location_history"].append(location_record)
     session["orientation_history"].append(orientation_info)
     session["confidence_history"].append(confidence)
-    
+
     # Keep history records within reasonable range
     if len(session["location_history"]) > 10:
         session["location_history"] = session["location_history"][-10:]
         session["orientation_history"] = session["orientation_history"][-10:]
         session["confidence_history"] = session["confidence_history"][-10:]
-    
-    print(f"📍 Session {session_id} location updated: {new_location} (confidence: {confidence:.3f})")
-    print(f"   Continuity: {continuity_check['reason']}, Boost: {continuity_check['confidence_boost']:.3f}")
 
-def get_location_distance(from_location: str, to_destination: str, site_id: str) -> dict:
-    """Calculate distance from current location to destination"""
-    # Define location relationships and distances in the scene
-    if site_id == "SCENE_A_MS":
-        location_distances = {
-            "entrance": {
-                "chair": {"steps": 3, "meters": 2.0, "direction": "straight ahead"},
-                "3d_printer": {"steps": 6, "meters": 4.0, "direction": "straight ahead"},
-                "glass_door": {"steps": 7, "meters": 5.0, "direction": "straight ahead"},
-                "bookshelf": {"steps": 4, "meters": 2.5, "direction": "left"},
-                "atrium": {"steps": 8, "meters": 5.5, "direction": "straight ahead"}
-            },
-            "chair": {
-                "entrance": {"steps": 3, "meters": 2.0, "direction": "behind"},
-                "3d_printer": {"steps": 3, "meters": 2.0, "direction": "straight ahead"},
-                "glass_door": {"steps": 4, "meters": 3.0, "direction": "straight ahead"},
-                "bookshelf": {"steps": 2, "meters": 1.5, "direction": "left"},
-                "atrium": {"steps": 5, "meters": 3.5, "direction": "straight ahead"}
-            },
-            "3d_printer": {
-                "entrance": {"steps": 6, "meters": 4.0, "direction": "behind"},
-                "chair": {"steps": 3, "meters": 2.0, "direction": "behind"},
-                "glass_door": {"steps": 1, "meters": 1.0, "direction": "straight ahead"},
-                "bookshelf": {"steps": 2, "meters": 1.5, "direction": "left"},
-                "atrium": {"steps": 2, "meters": 1.5, "direction": "straight ahead"}
-            },
-            "glass_door": {
-                "entrance": {"steps": 7, "meters": 5.0, "direction": "behind"},
-                "chair": {"steps": 4, "meters": 3.0, "direction": "behind"},
-                "3d_printer": {"steps": 1, "meters": 1.0, "direction": "behind"},
-                "bookshelf": {"steps": 3, "meters": 2.0, "direction": "left"},
-                "atrium": {"steps": 1, "meters": 0.5, "direction": "straight ahead"}
-            },
-            "bookshelf": {
-                "entrance": {"steps": 4, "meters": 2.5, "direction": "right"},
-                "chair": {"steps": 2, "meters": 1.5, "direction": "right"},
-                "3d_printer": {"steps": 2, "meters": 1.5, "direction": "right"},
-                "glass_door": {"steps": 3, "meters": 2.0, "direction": "right"},
-                "atrium": {"steps": 4, "meters": 2.5, "direction": "diagonal right"}
-            },
-            "atrium": {
-                "entrance": {"steps": 8, "meters": 5.5, "direction": "behind"},
-                "chair": {"steps": 5, "meters": 3.5, "direction": "behind"},
-                "3d_printer": {"steps": 2, "meters": 1.5, "direction": "behind"},
-                "glass_door": {"steps": 1, "meters": 0.5, "direction": "behind"},
-                "bookshelf": {"steps": 4, "meters": 2.5, "direction": "diagonal left"}
-            }
-        }
-    elif site_id == "SCENE_B_STUDIO":
-        location_distances = {
-            "entrance": {
-                "window": {"steps": 5, "meters": 3.5, "direction": "straight ahead"},
-                "sofa": {"steps": 4, "meters": 2.8, "direction": "left"},
-                "chair": {"steps": 5, "meters": 3.5, "direction": "left"},
-                "desk": {"steps": 6, "meters": 4.2, "direction": "straight ahead"}
-            },
-            "window": {
-                "entrance": {"steps": 5, "meters": 3.5, "direction": "behind"},
-                "sofa": {"steps": 3, "meters": 2.1, "direction": "left"},
-                "chair": {"steps": 4, "meters": 2.8, "direction": "left"},
-                "desk": {"steps": 1, "meters": 0.7, "direction": "straight ahead"}
-            },
-            "sofa": {
-                "entrance": {"steps": 4, "meters": 2.8, "direction": "right"},
-                "window": {"steps": 3, "meters": 2.1, "direction": "right"},
-                "chair": {"steps": 1, "meters": 0.7, "direction": "straight ahead"},
-                "desk": {"steps": 4, "meters": 2.8, "direction": "straight ahead"}
-            },
-            "chair": {
-                "entrance": {"steps": 5, "meters": 3.5, "direction": "right"},
-                "window": {"steps": 4, "meters": 2.8, "direction": "right"},
-                "sofa": {"steps": 1, "meters": 0.7, "direction": "behind"},
-                "desk": {"steps": 3, "meters": 2.1, "direction": "straight ahead"}
-            },
-            "desk": {
-                "entrance": {"steps": 6, "meters": 4.2, "direction": "behind"},
-                "window": {"steps": 1, "meters": 0.7, "direction": "behind"},
-                "sofa": {"steps": 4, "meters": 2.8, "direction": "behind"},
-                "chair": {"steps": 3, "meters": 2.1, "direction": "behind"}
-            }
-        }
-    else:
-        return {"error": "Unknown site_id", "distance": None, "direction": None}
-    
-    # Find distance information
-    if from_location in location_distances and to_destination in location_distances[from_location]:
-        distance_info = location_distances[from_location][to_destination]
-        return {
-            "from": from_location,
-            "to": to_destination,
-            "steps": distance_info["steps"],
-            "meters": distance_info["meters"],
-            "direction": distance_info["direction"],
-            "estimated_time": f"{distance_info['steps'] * 0.5:.1f} seconds"  # Assume 0.5 seconds per step
-        }
-    else:
-        return {"error": "Route not found", "from": from_location, "to": to_destination}
+    print(f"📍 Session {session_id} location updated: {new_location} (confidence: {confidence:.3f})")
+
 
 def generate_location_context_prompt(session_id: str, user_question: str, site_id: str, lang: str = "en") -> str:
     """Generate context prompt with location secondary judgment"""
@@ -586,96 +472,6 @@ def enhanced_ft_retrieval(caption: str, retriever, site_id: str, detailed_data: 
         print(f"❌ Enhanced FT retrieval failed: {e}")
         return []
 
-def match_detailed_descriptions(caption: str, detailed_data: list) -> list:
-    """Match caption against detailed descriptions using enhanced scoring"""
-    caption_lower = caption.lower()
-    matches = []
-    
-    for item in detailed_data:
-        score = 0.1  # Base score for any item to ensure minimum confidence
-        
-        # Score based on natural language text
-        nl_text = item.get("nl_text", "").lower()
-        if nl_text:
-            # Enhanced keyword matching with better scoring
-            keywords = extract_keywords(nl_text)
-            caption_keywords = extract_keywords(caption_lower)
-            
-            # Calculate overlap score with higher weights
-            overlap = len(set(keywords) & set(caption_keywords))
-            if overlap > 0:
-                score += overlap * 0.25  # Increased from 0.1 to 0.25
-                
-                # Bonus for high overlap ratio
-                overlap_ratio = overlap / len(keywords) if keywords else 0
-                if overlap_ratio > 0.3:
-                    score += 0.2  # Bonus for good overlap
-                elif overlap_ratio > 0.5:
-                    score += 0.4  # Bonus for excellent overlap
-            
-            # Add semantic similarity score using SentenceTransformer
-            try:
-                if EMB and nl_text and caption:
-                    # Calculate semantic similarity
-                    embeddings = EMB.encode([nl_text, caption])
-                    similarity = np.dot(embeddings[0], embeddings[1]) / (np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1]))
-                    semantic_score = max(0, similarity) * 0.3  # Scale similarity to 0-0.3 range
-                    score += semantic_score
-                    print(f"🔍 Semantic similarity for {item['id']}: {similarity:.3f} -> +{semantic_score:.3f}")
-            except Exception as e:
-                print(f"⚠️ Semantic similarity calculation failed: {e}")
-        
-        # Score based on structured text
-        struct_text = item.get("struct_text", "").lower()
-        if struct_text:
-            # Parse structured text for specific features
-            struct_score = parse_structured_text(caption_lower, struct_text)
-            score += struct_score
-        
-        # Enhanced bonus for exact matches with higher weights
-        key_equipment = ["3d printer", "ender", "ultimaker", "oscilloscope", "workbench", "bookshelf", "drawer", "glass", "door", "table", "chair"]
-        equipment_matches = []
-        
-        for keyword in key_equipment:
-            if keyword in caption_lower and keyword in nl_text:
-                equipment_matches.append(keyword)
-                score += 0.4  # Increased from 0.3 to 0.4
-        
-        # Additional bonus for multiple equipment matches
-        if len(equipment_matches) > 1:
-            score += 0.2 * len(equipment_matches)  # Bonus for multiple matches
-        
-        if score > 0:
-            matches.append({
-                "id": item["id"],
-                "scene_id": item["scene_id"],
-                "provider": item["provider"],
-                "text": item["nl_text"],
-                "struct_text": item["struct_text"],
-                "score": score,
-                "score_nl": score,
-                "score_struct": 0.0,
-                "bonus_keywords": 0.0,
-                "bonus_bearing": 0.0,
-                "alpha_used": 0.8,
-                "source_file": item["source_file"],
-                "retrieval_method": "enhanced_detailed_matching"
-            })
-    
-    # Normalize and boost scores to improve confidence
-    for match in matches:
-        # Boost scores to ensure they're in a reasonable range
-        if match["score"] < 0.5:
-            match["score"] = match["score"] * 1.5  # Boost low scores
-        elif match["score"] < 0.7:
-            match["score"] = match["score"] * 1.2  # Moderate boost for medium scores
-        
-        # Cap scores at 0.95 to maintain some uncertainty
-        match["score"] = min(match["score"], 0.95)
-    
-    # Sort by score
-    matches.sort(key=lambda x: x["score"], reverse=True)
-    return matches
 
 def find_node_details_by_hint(node_id: str, detailed_data: list) -> list:
     """Find detail descriptions from Sense_A_MS.jsonl using node_hint field with alias resolution"""
@@ -861,39 +657,6 @@ def calculate_feature_enhancement(caption: str, unique_features: list) -> float:
     
     return min(feature_score, 0.3)  # Cap feature bonus at 0.3
 
-def calculate_detail_enhancement(caption: str, node_details: list) -> float:
-    """Calculate detail enhancement score for semantic overlay (legacy function)"""
-    if not node_details:
-        return 0.0
-    
-    total_score = 0.0
-    caption_lower = caption.lower()
-    
-    for detail in node_details:
-        detail_score = 0.0
-        
-        # Natural language text enhancement
-        nl_text = detail.get("nl_text", "").lower()
-        if nl_text:
-            # Semantic similarity using SentenceTransformer
-            try:
-                if EMB and nl_text and caption:
-                    embeddings = EMB.encode([nl_text, caption])
-                    similarity = np.dot(embeddings[0], embeddings[1]) / (np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1]))
-                    semantic_score = max(0, similarity) * 0.4  # Scale to 0-0.4 range
-                    detail_score += semantic_score
-            except Exception as e:
-                print(f"⚠️ Semantic similarity calculation failed: {e}")
-        
-        # Structured text enhancement
-        struct_text = detail.get("struct_text", "").lower()
-        if struct_text:
-            struct_score = parse_structured_text(caption_lower, struct_text)
-            detail_score += struct_score * 0.3  # Reduced weight for structure
-        
-        total_score = max(total_score, detail_score)  # Take best detail match
-    
-    return min(total_score, 1.0)  # Cap at 1.0
 
 def extract_keywords(text: str) -> list:
     """Extract meaningful keywords from text"""
@@ -935,39 +698,6 @@ def parse_structured_text(caption: str, struct_text: str) -> float:
     
     return score
 
-def combine_retrieval_results(standard_candidates: list, detailed_candidates: list, caption: str) -> list:
-    """Combine and rank results from both retrieval methods"""
-    combined = []
-    
-    # Add standard candidates with their original scores
-    for candidate in standard_candidates:
-        candidate["retrieval_method"] = "standard_dual_channel"
-        combined.append(candidate)
-    
-    # Add detailed candidates, potentially boosting scores for good matches
-    for candidate in detailed_candidates:
-        # Check if this candidate is already in combined list
-        existing = next((c for c in combined if c["id"] == candidate["id"]), None)
-        if existing:
-            # Boost existing candidate score
-            existing["score"] = max(existing["score"], candidate["score"])
-            existing["retrieval_method"] = "combined_enhanced"
-            existing["detailed_match_score"] = candidate["score"]
-        else:
-            # Add new candidate
-            combined.append(candidate)
-    
-    # Sort by final score
-    combined.sort(key=lambda x: x["score"], reverse=True)
-    
-    # Add confidence analysis
-    if len(combined) >= 2:
-        score_diff = combined[0]["score"] - combined[1]["score"]
-        for candidate in combined[:10]:
-            candidate["high_confidence"] = score_diff >= 0.05
-            candidate["score_diff"] = score_diff
-    
-    return combined
 
 # Session-level logging switch: key = (session_id, provider) -> {"enabled":bool, "run_id":str}
 LOG_SWITCH = defaultdict(lambda: {"enabled": False, "run_id": ""})
@@ -1087,46 +817,49 @@ def _now_ms():
 LOWCONF_SCORE_TH = float(os.getenv("LOWCONF_SCORE_TH", "0.50"))  # 🔧 FIX P1-5: 跟论文 §3.4 对齐（confidence < 0.50 → 请求新照片）
 LOWCONF_MARGIN_TH = float(os.getenv("LOWCONF_MARGIN_TH", "0.10"))  # 🔧 FIX P1-5: 跟论文 §3.4 对齐（margin < 0.10 → 请求新照片）
 
-# 🔧 NEW: Softmax temperature calibration for confidence scoring
-SOFTMAX_TEMPERATURE = float(os.getenv("SOFTMAX_TEMPERATURE", "0.06"))  # Temperature for softmax calibration
-ENABLE_SOFTMAX_CALIBRATION = False  # 修复：强制关闭softmax校准
 ENABLE_CONTINUITY_BOOST = os.getenv("ENABLE_CONTINUITY_BOOST", "true").lower() == "true"
 
+# 🆕 SigLIP retriever (Plan B): replaces BLIP-caption + dual-channel fusion with
+# a single SigLIP-so400m image→text-template matching call. On the labeled
+# 37-photo benchmark this reaches useful-top1 = 73.0% (paper Table 4 metric),
+# matching the paper's fine-tuned baseline. Falls back to legacy when off.
+ENABLE_SIGLIP = os.getenv("ENABLE_SIGLIP", "true").lower() == "true"
+siglip_retriever = None
+if ENABLE_SIGLIP:
+    try:
+        from siglip_retriever import get_retriever as _get_siglip
+        siglip_retriever = _get_siglip()
+    except Exception as _e:
+        print(f"⚠️ SigLIP retriever init failed: {_e}")
+        siglip_retriever = None
+
+# 🔧 Fusion hyperparameters — env-tunable so an outer driver can sweep them.
+# All defaults are the existing hardcoded values; changing nothing keeps current
+# behavior. See backend/tools/sweep_fusion.py for the search driver.
+FUSION_GAMMA        = float(os.getenv("FUSION_GAMMA",        "0.15"))   # continuity-boost coef
+FUSION_NEG_PENALTY  = float(os.getenv("FUSION_NEG_PENALTY",  "0.15"))   # apply_negatives() per-hit penalty
+FUSION_STRUCT_TAU   = float(os.getenv("FUSION_STRUCT_TAU",   "0.15"))   # structure channel softmax temperature
+FUSION_DETAIL_TAU   = float(os.getenv("FUSION_DETAIL_TAU",   "0.20"))   # detail channel softmax temperature
+FUSION_CONFLICT_GAP = float(os.getenv("FUSION_CONFLICT_GAP", "0.50"))   # |struct_logit - detail_logit| trigger for conflict gating
+FUSION_ALPHA_FB     = float(os.getenv("FUSION_ALPHA_FB",     "0.65"))   # α fallback when both channel clarities are zero
+FUSION_BETA_FB      = float(os.getenv("FUSION_BETA_FB",      "0.35"))   # β fallback (paired with FUSION_ALPHA_FB)
+# Force-override (-1 = use adaptive). Useful for diagnostics: α=1/β=0 = struct-only,
+# α=0/β=1 = detail-only. Set both to non-negative values to bypass _adaptive_weights.
+FUSION_ALPHA_FORCE  = float(os.getenv("FUSION_ALPHA_FORCE",  "-1"))
+FUSION_BETA_FORCE   = float(os.getenv("FUSION_BETA_FORCE",   "-1"))
+
 print(f"🔧 Low-confidence thresholds: score<{LOWCONF_SCORE_TH}, margin<{LOWCONF_MARGIN_TH}")
-print(f"🔧 Softmax calibration: enabled={ENABLE_SOFTMAX_CALIBRATION}, temperature={SOFTMAX_TEMPERATURE}")
 print(f"🔧 Continuity boost: enabled={ENABLE_CONTINUITY_BOOST}")
+print(f"🔧 Fusion hyperparams: γ={FUSION_GAMMA}, neg_penalty={FUSION_NEG_PENALTY}, "
+      f"τ_struct={FUSION_STRUCT_TAU}, τ_detail={FUSION_DETAIL_TAU}, "
+      f"conflict_gap={FUSION_CONFLICT_GAP}, αβ_fb=({FUSION_ALPHA_FB}, {FUSION_BETA_FB})")
+# Note: an `apply_softmax_calibration` helper and SOFTMAX_TEMPERATURE / ENABLE_SOFTMAX_CALIBRATION
+# constants used to live here. `ENABLE_SOFTMAX_CALIBRATION` was hardcoded to False and the helper
+# had no callers — removed. The live softmax now lives in the retriever's per-channel calibration
+# and the final fusion softmax (env `FUSION_TEMPERATURE`, default 0.25).
 
-def apply_softmax_calibration(scores: List[float], temperature: float = None) -> List[float]:
-    """
-    Apply softmax calibration to convert raw similarity scores to probabilities
-    
-    Args:
-        scores: List of raw similarity scores
-        temperature: Temperature parameter (lower = sharper distribution)
-    
-    Returns:
-        List of calibrated probabilities
-    """
-    if temperature is None:
-        temperature = SOFTMAX_TEMPERATURE
-    
-    if not scores:
-        return []
-    
-    # Apply temperature scaling
-    scaled_scores = [score / temperature for score in scores]
-    
-    # Compute softmax
-    max_score = max(scaled_scores)
-    exp_scores = [np.exp(score - max_score) for score in scaled_scores]
-    sum_exp_scores = sum(exp_scores)
-    
-    # Normalize to probabilities
-    probabilities = [exp_score / sum_exp_scores for exp_score in exp_scores]
-    
-    return probabilities
 
-def calibrate_confidence(margin, has_detail, struct_top1, detail_top1, same_as_last, content_match):
+def calibrate_confidence(margin, has_detail, struct_top1, detail_top1, same_as_last):
     """温和的置信度标定，避免"先拉满再腰斩" """
     import numpy as np
     
@@ -1135,21 +868,20 @@ def calibrate_confidence(margin, has_detail, struct_top1, detail_top1, same_as_l
     if not has_detail:
         conf_m *= 0.92
 
-    # 一致性：没有 top1 的时候不要给 1.15
+    # 一致性：没有 top1 的时候不要给 1.15。
+    # 之前还有一个 `elif are_neighbors(struct_top1, detail_top1): cons = 1.05` 分支，
+    # 但 are_neighbors 永远 return False（模块作用域看不到 retriever 的 _are_neighbors），
+    # 所以该 1.05 路径死了——直接拿掉，简化为 same/diff/missing 三态。
     if struct_top1 and detail_top1:
-        if struct_top1 == detail_top1:
-            cons = 1.15
-        elif are_neighbors(struct_top1, detail_top1):
-            cons = 1.05
-        else:
-            cons = 0.92
+        cons = 1.15 if struct_top1 == detail_top1 else 0.92
     else:
         cons = 0.95
 
     cont = 1.10 if same_as_last else 1.00
 
-    # 内容匹配放最后，用温和乘法（≥0.75 下限）
-    conf = conf_m * cons * cont * max(0.75, float(content_match or 1.0))
+    # 之前还有 `* max(0.75, float(content_match or 1.0))`，但两处 caller 都硬编码 content_match=1.0，
+    # 这一项实际恒为 1.0——删掉参数 + 这一项的乘法，让 calibrate_confidence 的签名诚实反映用了什么。
+    conf = conf_m * cons * cont
     
     # 🔧 FIX: 移除硬编码的0.98上限，使用动态上限
     # 基于margin动态调整上限：高margin时允许更高confidence
@@ -1167,10 +899,6 @@ def calibrate_confidence(margin, has_detail, struct_top1, detail_top1, same_as_l
         return conf, False   # False=不要 update_session
     return conf, True
 
-def are_neighbors(node1, node2):
-    """检查两个节点是否为邻居（简化版）"""
-    # TODO: 实现真实的拓扑邻居检查
-    return False  # 暂时返回False，避免错误
 
 def calculate_calibrated_confidence_and_margin(
     candidates: List[Dict],
@@ -1178,7 +906,7 @@ def calculate_calibrated_confidence_and_margin(
     session_id: Optional[str] = None,
     site_id: Optional[str] = None,
 ) -> tuple:
-    """统一置信度计算：margin → sigmoid → consistency × continuity × content_match
+    """统一置信度计算：margin → sigmoid → consistency × continuity
 
     🔧 FIX P0-1: 原实现把 struct_top1/detail_top1 写死成 None，导致
        calibrate_confidence 里 consistency 永远走 else 分支返回 0.92（-8% 惩罚）。
@@ -1209,7 +937,6 @@ def calculate_calibrated_confidence_and_margin(
             struct_top1=top1.get("_struct_top1_id"),
             detail_top1=top1.get("_detail_top1_id"),
             same_as_last=False,
-            content_match=1.0,
         )
         return confidence, 0.0, top1_score, 0.0
 
@@ -1235,7 +962,6 @@ def calculate_calibrated_confidence_and_margin(
         struct_top1=struct_top1,
         detail_top1=detail_top1,
         same_as_last=same_as_last,
-        content_match=1.0,
     )
 
     print(f"🔧 置信度标定: margin={margin:.3f}, has_detail={has_detail}, "
@@ -1251,10 +977,8 @@ def apply_continuity_boost(top1_score: float, session_id: str, site_id: str,
     Returns:
         tuple: (boost, reason)
     """
-    # 修复：使用粘性阈值，不惩罚换点
-    TH_UP = 0.60    # 只有当新位置 conf>=0.60 才允许切换
-    TH_DOWN = 0.35  # 当新位置 conf<0.35 时坚决不切换（保留上一帧）
-    
+    # 注：原来这里有 TH_UP=0.60 / TH_DOWN=0.35 两个"粘性阈值"局部常量，但
+    # 整个函数体内从未引用，纯死常量——拿掉。
     boost = 0.0
     reason = "none"
     
@@ -1477,7 +1201,9 @@ try:
     if current_dir not in sys.path:
         sys.path.insert(0, current_dir)
     
-    from dual_channel_retrieval import DualChannelRetrieval
+    import dual_channel_retrieval  # load-check only — the actual retriever class
+    # lives in app.py; this import just confirms the module is importable.
+    _ = dual_channel_retrieval
     DUAL_CHANNEL_AVAILABLE = True
     print("✅ Dual channel retrieval module imported successfully")
 except ImportError as e:
@@ -1510,11 +1236,12 @@ def get_unified_retriever():
             # 🔧 ENHANCED: Create an enhanced dual-channel retriever with improved fusion strategy
             class EnhancedDualChannelRetriever:
                 def __init__(self):
-                    self.structure_tau = 0.15  # 结构通道温度（提高，让分布更平衡）
-                    self.detail_tau = 0.20     # 细节通道温度（提高，让分布更平衡）
+                    # env-tunable (FUSION_STRUCT_TAU / FUSION_DETAIL_TAU)
+                    self.structure_tau = FUSION_STRUCT_TAU
+                    self.detail_tau = FUSION_DETAIL_TAU
                     self.alpha = 0.35          # 结构通道权重（进一步降低，减少宽泛索引词影响）
                     self.beta = 0.65           # 细节通道权重（进一步提高，增强内容匹配）
-                    self.gamma = 0.15          # 连续性boost权重（适中，避免过度影响）
+                    self.gamma = FUSION_GAMMA  # env-tunable (FUSION_GAMMA)
                     
                     # 🔧 FIX: 延迟加载数据，等待场景信息
                     self.structure_data = None
@@ -1782,9 +1509,14 @@ def get_unified_retriever():
                 
                 def _adaptive_weights(self, struct_entropy, detail_entropy):
                     """根据通道熵自适应调整权重（标准公式实现）"""
+                    # Diagnostic force-override path (env: FUSION_ALPHA_FORCE / FUSION_BETA_FORCE).
+                    # Both -1 → use adaptive (default); both ≥ 0 → bypass adaptive entirely.
+                    if FUSION_ALPHA_FORCE >= 0 and FUSION_BETA_FORCE >= 0:
+                        print(f"🔧 FORCE α/β override: α={FUSION_ALPHA_FORCE}, β={FUSION_BETA_FORCE}")
+                        return FUSION_ALPHA_FORCE, FUSION_BETA_FORCE
                     # 按照标准公式：α = (1-H_struct) / ((1-H_struct) + (1-H_detail))
                     # 熵越低，权重越高（分布越尖锐，越可信）
-                    
+
                     # 计算清晰度（1 - 熵）
                     struct_clarity = 1.0 - struct_entropy
                     detail_clarity = 1.0 - detail_entropy
@@ -1808,7 +1540,7 @@ def get_unified_retriever():
                         
                     else:
                         # 如果两个通道都很平（高熵），使用默认权重
-                        alpha, beta = 0.65, 0.35
+                        alpha, beta = FUSION_ALPHA_FB, FUSION_BETA_FB
                     
                     print(f"🔧 Dynamic weight calculation:")
                     print(f"   Structure entropy: {struct_entropy:.3f} → clarity: {struct_clarity:.3f} → weight: {alpha:.3f}")
@@ -1824,7 +1556,7 @@ def get_unified_retriever():
                     
                     try:
                         # 🔧 NEW: 反证惩罚机制
-                        def apply_negatives(score, node_meta, query_text, penalty=0.15):
+                        def apply_negatives(score, node_meta, query_text, penalty=FUSION_NEG_PENALTY):
                             """应用反证惩罚：如果查询文本命中节点的negative提示，则降低分数。
                             返回 (新分数, 命中数)，命中数供 DG2 区分度打点使用。"""
                             neg = set(node_meta.get("retrieval", {}).get("negative", []))
@@ -1909,7 +1641,7 @@ def get_unified_retriever():
                         
                         # 冲突门控检查：检查两个通道的top1是否不同且差异很大
                         conflict_detected = False
-                        conflict_threshold = 0.5  # 冲突检测阈值
+                        conflict_threshold = FUSION_CONFLICT_GAP  # env-tunable
                         alpha_final = alpha
                         beta_final = beta
 
@@ -1941,7 +1673,7 @@ def get_unified_retriever():
                                     print(f"   Using conflict gating strategy")
                                     
                                     # 🔧 NEW: 冲突门控改为局部返回值，只执行一次
-                                    alpha_final, beta_final = self._conflict_gate(alpha, beta, struct_top1_logit, detail_top1_logit, gap=0.5)
+                                    alpha_final, beta_final = self._conflict_gate(alpha, beta, struct_top1_logit, detail_top1_logit, gap=FUSION_CONFLICT_GAP)
                                     print(f"🔧 冲突门控: α={alpha:.3f}→{alpha_final:.3f}, β={beta:.3f}→{beta_final:.3f}")
                         
                         # 融合对数几率（带冲突门控）
@@ -2451,44 +2183,10 @@ def get_unified_retriever():
                         print(f"⚠️ Failed to read detail map: {e}")
                         return []
                 
-                def _calculate_detail_score(self, detail_item, caption_lower):
-                    """计算detail项的检索分数（细节通道）"""
-                    score = 0.0
-                    
-                    # 1. 自然语言文本匹配
-                    nl_text = detail_item.get("nl_text", "").lower()
-                    if nl_text:
-                        # 简单的词汇匹配
-                        caption_words = set(caption_lower.split())
-                        text_words = set(nl_text.split())
-                        overlap = len(caption_words & text_words)
-                        if overlap > 0:
-                            score += overlap * 0.1  # 每个匹配词+0.1
-                    
-                    # 2. 结构化文本匹配
-                    struct_text = detail_item.get("struct_text", "").lower()
-                    if struct_text:
-                        caption_words = set(caption_lower.split())
-                        struct_words = set(struct_text.split())
-                        overlap = len(caption_words & struct_words)
-                        if overlap > 0:
-                            score += overlap * 0.08  # 每个匹配词+0.08
-                    
-                    # 3. 空间关系匹配
-                    spatial_relations = detail_item.get("spatial_relations", {})
-                    for relation, landmark in spatial_relations.items():
-                        if landmark and any(word in caption_lower for word in str(landmark).split()):
-                            score += 0.05  # 空间关系匹配+0.05
-                    
-                    # 4. 独特特征匹配
-                    unique_features = detail_item.get("unique_features", [])
-                    for feature in unique_features:
-                        if any(word in caption_lower for word in feature.lower().split()):
-                            score += 0.03  # 每个匹配特征+0.03
+                # 🔧 Removed an earlier (dead) copy of `_calculate_detail_score`
+                # defined here. Python kept the later override at the bottom of this
+                # class as the live one — see definition further below.
 
-                    # 🔧 FIX P1-7: 去掉 min(1.0, score) 上限（与 _calculate_node_score 一致）
-                    return score
-                
                 def _calculate_node_score(self, node, caption_lower):
                     """计算节点的检索分数（结构通道）- 增强版"""
                     score = 0.0
@@ -2832,12 +2530,6 @@ def hf_caption(image_bytes: bytes) -> str:
         print(f"⚠ Error in local BLIP captioning: {e}")
         return "an indoor workspace with desks and shelves"
 
-def guess_bearing_from_caption(caption: str) -> str:
-    t = caption.lower()
-    if "left" in t: return "left"
-    if "right" in t: return "right"
-    if "behind" in t or "back" in t: return "behind"
-    return "ahead"
 
 # ---------- ASR (faster-whisper) ----------
 from faster_whisper import WhisperModel
@@ -2967,27 +2659,9 @@ def asr_bytes_to_text(data: bytes) -> str:
             pass
         raise e
 
-# ---------- LLM fallback (intent only) ----------
+# ---------- OpenAI client (used by /api/qa) ----------
 from openai import OpenAI
 OAI = OpenAI(api_key=LLM_KEY)
-INTENTS = ["repeat","lost","confirm_a","confirm_b","confirm_neither","to_atrium","distance_a","hazard_boxes","to_window","to_chair","distance_b","hazard_cable"]
-SYS_PROMPT = (
-    "Return JSON only. Identify the user's intent for indoor navigation.\n"
-    f"Allowed intents = {INTENTS}.\n"
-    "If nothing matches, return {\"intent\":\"unknown\"}."
-)
-def llm_intent(text: str) -> str:
-    if not text.strip(): return "unknown"
-    resp = OAI.chat.completions.create(
-        model=LLM_MODEL, temperature=LLM_TEMP,
-        response_format={"type":"json_object"},
-        messages=[{"role":"system","content":SYS_PROMPT},{"role":"user","content":text}],
-    )
-    try:
-        j = json.loads(resp.choices[0].message.content)
-        return j.get("intent","unknown")
-    except Exception:
-        return "unknown"
 
 # ---------- FastAPI ----------
 app = FastAPI(title="VLN4VI Backend", version="1.0.0")
@@ -3211,31 +2885,35 @@ async def api_locate(
     
     print(f"🔍 API locate called: site_id={site_id}, provider={provider}, first_photo={first_photo}, session_id={session_id}")
     
-    # ✅ Check if this is the first photo
-    if first_photo:
-        print(f"📸 First photo detected for {provider}_{site_id}")
-        
-        # First photo: return traditional preset output from JSONL files
+    # 🔧 FIX: 把原来重复的两段 70 行 warmup 分支合并成一条。
+    # 触发条件 = 客户端显式 first_photo=True，或者会话对该 provider+site 还未拍过任何照片。
+    # 之前第二个分支在 CSV 行里多写了 2 个空列，导致 low_conf_rule 之后的 timing 列错位 — 一并修掉。
+    session_key = f"{session_id}_{provider}_{site_id}"
+    if "_photo_count" not in SESSIONS:
+        SESSIONS["_photo_count"] = {}
+    SESSIONS["_photo_count"].setdefault(session_key, 0)
+
+    is_warmup = first_photo or SESSIONS["_photo_count"][session_key] == 0
+    if is_warmup:
+        reason = "first_photo flag" if first_photo else f"photo_count==0 for {session_key}"
+        print(f"📸 Warmup path ({reason})")
+        SESSIONS["_photo_count"][session_key] = 1
+
+        # BLIP caption only for logging — the response uses the preset output.
         try:
-            # Get image and generate BLIP caption for logging purposes only
             img = await image.read()
             cap = hf_caption(img)
             print(f"📸 BLIP caption for first photo (logging only): {cap[:100]}...")
-            
-            # 🔧 FIXED: Use traditional preset output for first photo, not AI reasoning
             preset_output = get_preset_output(provider, site_id)
             print(f"📚 First photo preset output for {provider}_{site_id}: {preset_output[:100]}...")
         except Exception as e:
             print(f"⚠️ Failed to get preset output, using fallback: {e}")
-            # Fall back to simple welcome message
             preset_output = f"Welcome to {site_id}! Please take a photo to start exploring."
             print(f"📚 Fallback preset output: {preset_output}")
-        
-        # 🔧 Record warmup phase (first photo) for tracking
+
+        # Always log warmup row (regardless of /api/logging/set switch).
         paths = _log_paths(provider)
         _ensure_headers(paths)
-        
-        # Always log warmup phase, regardless of logging switch
         with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
                 site_id, "WARMUP", datetime.utcnow().isoformat(), req_id, session_id, provider,
@@ -3246,36 +2924,34 @@ async def api_locate(
                 "", "",  # low_conf, low_conf_rule
                 client_start_ms or "", server_recv_ms, _now_ms()  # timing
             ])
-        
         print(f"📝 Warmup phase logged for {provider}_{site_id}")
-        
-        # ✅ New: Collect DG metrics for first photo
+
+        # DG metrics for the warmup event (no-ops when collector/evaluator are disabled).
         try:
-            enhanced_metrics_collector.collect_real_time_data(
-                MetricType.USER_BEHAVIOR,
-                session_id,
-                {
-                    "action": "first_photo",
-                    "site_id": site_id,
-                    "provider": provider,
-                    "preset_output_used": True,
-                    "photo_count": 1
-                },
-                priority=DataPriority.HIGH,
-                tags=["navigation", "first_photo", "preset_output"]
-            )
-            
-            # Record DG1 evaluation (No Hardware Dependency)
+            if enhanced_metrics_collector:
+                enhanced_metrics_collector.collect_real_time_data(
+                    MetricType.USER_BEHAVIOR,
+                    session_id,
+                    {
+                        "action": "first_photo",
+                        "site_id": site_id,
+                        "provider": provider,
+                        "preset_output_used": True,
+                        "photo_count": 1,
+                    },
+                    priority=DataPriority.HIGH,
+                    tags=["navigation", "first_photo", "preset_output"],
+                )
             if dg_evaluator:
                 dg_evaluator.dg1_evaluator.record_setup_process(
                     session_id=session_id,
                     steps=["photo_capture", "preset_output_display"],
                     time_taken=0,
-                    success=True
+                    success=True,
                 )
         except Exception as e:
             print(f"⚠️ Failed to collect DG metrics for first photo: {e}")
-        
+
         return {
             "req_id": req_id,
             "caption": cap if 'cap' in locals() else "First photo - preset output",
@@ -3284,64 +2960,7 @@ async def api_locate(
             "low_conf": False,
             "preset_output": preset_output,
             "is_first_photo": True,
-            "retrieval_method": "preset_output"
-        }
-    
-    # 🔧 FORCE FIRST PHOTO DETECTION: If this is a new session, treat as first photo
-    session_key = f"{session_id}_{provider}_{site_id}"
-    if session_key not in SESSIONS.get("_photo_count", {}):
-        if "_photo_count" not in SESSIONS:
-            SESSIONS["_photo_count"] = {}
-        SESSIONS["_photo_count"][session_key] = 0
-    
-    photo_count = SESSIONS["_photo_count"][session_key]
-    if photo_count == 0:
-        print(f"🔧 FORCE DETECTION: First photo for session {session_key}")
-        SESSIONS["_photo_count"][session_key] = 1
-        
-        # First photo: return traditional preset output from JSONL files
-        try:
-            # Get image and generate BLIP caption for logging purposes only
-            img = await image.read()
-            cap = hf_caption(img)
-            print(f"📸 BLIP caption for first photo (logging only): {cap[:100]}...")
-            
-            # 🔧 FIXED: Use traditional preset output for first photo, not AI reasoning
-            preset_output = get_preset_output(provider, site_id)
-            print(f"📚 First photo preset output for {provider}_{site_id}: {preset_output[:100]}...")
-        except Exception as e:
-            print(f"⚠️ Failed to get preset output, using fallback: {e}")
-            # Fall back to simple welcome message
-            preset_output = f"Welcome to {site_id}! Please take a photo to start exploring."
-            print(f"📚 Fallback preset output: {preset_output}")
-        
-        # 🔧 Record warmup phase (first photo) for tracking
-        paths = _log_paths(provider)
-        _ensure_headers(paths)
-        
-        # Always log warmup phase, regardless of logging switch
-        with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([
-                site_id, "WARMUP", datetime.utcnow().isoformat(), req_id, session_id, provider,
-                "warmup",  # phase
-                "First photo - preset output",  # caption
-                "", "", "", "", "",  # top1, top2, margin
-                "", "", "", "",  # gt_node_id, hit_top1, hit_top2, hit_hop1
-                "", "", "", "",  # low_conf, low_conf_rule
-                client_start_ms or "", server_recv_ms, _now_ms()  # timing
-            ])
-        
-        print(f"📝 Warmup phase logged for {provider}_{site_id}")
-        
-        return {
-            "req_id": req_id,
-            "caption": cap if 'cap' in locals() else "First photo - preset output",
-            "node_id": None,
-            "confidence": 1.0,
-            "low_conf": False,
-            "preset_output": preset_output,
-            "is_first_photo": True,
-            "retrieval_method": "preset_output"
+            "retrieval_method": "preset_output",
         }
     
     # 1) Get image → BLIP generate caption (for subsequent photos)
@@ -3363,14 +2982,101 @@ async def api_locate(
                 ])
         raise HTTPException(status_code=400, detail=f"BLIP failed: {e}")
     
-    # 🔧 Increment photo count for this session
+    # 🔧 Increment photo count for this session. Keep a local `photo_count` for
+    # downstream metrics/DG-evaluator calls (deleting the duplicate warmup branch
+    # in the previous cleanup dropped the local-variable assignment downstream
+    # references relied on — pyflakes flagged it).
     SESSIONS["_photo_count"][session_key] += 1
-    print(f"📸 Photo #{SESSIONS['_photo_count'][session_key]} for session {session_key}")
-    
-    # 2) Try unified dual-channel retrieval first
-    # Initialize paths early to avoid UnboundLocalError
+    photo_count = SESSIONS["_photo_count"][session_key]
+    print(f"📸 Photo #{photo_count} for session {session_key}")
+
+    # Initialize paths early (used by both SigLIP and legacy paths for CSV logging)
     paths = _log_paths(provider)
     _ensure_headers(paths)
+
+    # 🆕 SigLIP short-circuit (ENABLE_SIGLIP=true and retriever loaded).
+    # Single forward pass: image→cosine vs clean-textmap embeddings.
+    # 73.0% useful-top1 on the labeled benchmark vs ~50% for the legacy
+    # BLIP+fusion pipeline. See backend/siglip_retriever.py.
+    if siglip_retriever is not None:
+        try:
+            print(f"🆕 SigLIP retrieval path for {site_id}")
+            siglip_results = siglip_retriever.predict(img, top_k=5, site_id=site_id)
+            top1 = siglip_results[0]
+            top2 = siglip_results[1] if len(siglip_results) > 1 else {"confidence": 0.0, "score": 0.0}
+            top1_id = top1["node_id"]
+            confidence = top1["confidence"]
+            margin = max(0.0, top1["confidence"] - top2["confidence"])
+            low_conf = (confidence < LOWCONF_SCORE_TH) or (margin < LOWCONF_MARGIN_TH)
+
+            # Bearing — best-effort from BLIP caption (kept for FE compatibility)
+            t = cap.lower()
+            bearing = ""
+            if "left" in t:
+                bearing = "left"
+            elif "right" in t:
+                bearing = "right"
+            elif "behind" in t or "back" in t:
+                bearing = "behind"
+
+            # Language + navigation instruction (reuse existing helpers)
+            detected_lang = detect_language_from_caption(cap, provider)
+            matching_data = get_matching_data(provider, site_id) or {}
+            navigation_response = generate_dynamic_navigation_response(
+                site_id, top1_id, confidence, low_conf, matching_data, detected_lang, top1
+            )
+
+            # Session location update
+            orientation_info = track_orientation(session_id, cap, top1_id)
+            update_session_location(session_id, top1_id, confidence, orientation_info)
+
+            # Log to CSV (warmup-style row plus the locate fields the rest of the
+            # pipeline writes; we keep the schema consistent with the legacy path)
+            enabled, run_id = _is_logging(session_id, provider)
+            top2_id = top2.get("node_id", "")
+            hit_top1 = "" if not gt_node_id else ("True" if top1_id == gt_node_id else "False")
+            hit_top2 = "" if not gt_node_id else ("True" if top2_id == gt_node_id else "False")
+            with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    site_id, run_id if enabled else "SIGLIP",
+                    datetime.utcnow().isoformat(), req_id, session_id, provider,
+                    "siglip", cap[:200],
+                    top1_id, f"{confidence:.4f}", top2_id, f"{top2.get('confidence', 0.0):.4f}",
+                    f"{margin:.4f}",
+                    gt_node_id or "", hit_top1, hit_top2, "",
+                    str(low_conf).lower(), "siglip_default",
+                    client_start_ms or "", server_recv_ms, _now_ms()
+                ])
+
+            response = {
+                "req_id": req_id,
+                "caption": cap,
+                "node_id": top1_id,
+                "confidence": confidence,
+                "low_conf": low_conf,
+                "bearing": bearing,
+                "margin": margin,
+                "navigation_instruction": navigation_response,
+                "current_location": get_location_description(top1_id, []),
+                "next_action": get_next_action(top1_id, site_id, detected_lang),
+                "candidates": [
+                    {
+                        "id": c["node_id"],
+                        "score": c["score"],
+                        "confidence": c["confidence"],
+                        "rank": c["rank"],
+                    }
+                    for c in siglip_results
+                ],
+                "retrieval_method": "siglip_so400m_v1",
+                "siglip_score_top1": top1["score"],
+            }
+            print(f"✅ SigLIP top1={top1_id} conf={confidence:.3f} margin={margin:.3f} low_conf={low_conf}")
+            return response
+        except Exception as _e:
+            print(f"⚠️ SigLIP path failed: {_e} — falling through to legacy retrieval")
+
+    # 2) Try unified dual-channel retrieval first (legacy fallback)
     
     retriever = get_unified_retriever()
     if retriever:
@@ -3526,27 +3232,28 @@ async def api_locate(
                 update_session_location(session_id, top1_id, final_confidence, orientation_info)
                 print(f"🔧 会话位置已更新: {top1_id} (confidence: {final_confidence:.3f})")
                 
-                # ✅ New: Collect DG metrics for successful localization
+                # ✅ Collect DG metrics for successful localization (guarded on collector).
                 try:
-                    enhanced_metrics_collector.collect_real_time_data(
-                        MetricType.USER_BEHAVIOR,
-                        session_id,
-                        {
-                            "action": "photo_localization",
-                            "site_id": site_id,
-                            "provider": provider,
-                            "predicted_location": top1_id,
-                            "confidence": final_confidence,
-                            "low_conf": low_conf,
-                            "photo_count": photo_count,
-                            "gt_node_id": gt_node_id,
-                            "hit_top1": hit_top1 == "True",
-                            "margin": final_margin
-                        },
-                        priority=DataPriority.HIGH,
-                        tags=["navigation", "localization", "photo_analysis"]
-                    )
-                    
+                    if enhanced_metrics_collector:
+                        enhanced_metrics_collector.collect_real_time_data(
+                            MetricType.USER_BEHAVIOR,
+                            session_id,
+                            {
+                                "action": "photo_localization",
+                                "site_id": site_id,
+                                "provider": provider,
+                                "predicted_location": top1_id,
+                                "confidence": final_confidence,
+                                "low_conf": low_conf,
+                                "photo_count": photo_count,
+                                "gt_node_id": gt_node_id,
+                                "hit_top1": hit_top1 == "True",
+                                "margin": final_margin
+                            },
+                            priority=DataPriority.HIGH,
+                            tags=["navigation", "localization", "photo_analysis"]
+                        )
+
                     # Record DG3 evaluation (Useful Precision in Localization)
                     if dg_evaluator:
                         dg_evaluator.dg3_evaluator.record_interaction_behavior(
@@ -3564,20 +3271,20 @@ async def api_locate(
                             context="photo_localization"
                         )
                     
-                    # Record user needs validation data
-                    user_needs_validator.record_validation_data(
-                        session_id,
-                        UserNeed.N2_POSITIONING_ACCURACY,
-                        "positioning_error",
-                        1.0 if hit_top1 == "True" else 2.0  # Simplified error estimation
-                    )
-                    
-                    user_needs_validator.record_validation_data(
-                        session_id,
-                        UserNeed.N2_POSITIONING_ACCURACY,
-                        "task_completion_rate",
-                        1.0 if hit_top1 == "True" else 0.5
-                    )
+                    # Record user needs validation data (guarded — validator not wired yet)
+                    if user_needs_validator:
+                        user_needs_validator.record_validation_data(
+                            session_id,
+                            UserNeed.N2_POSITIONING_ACCURACY,
+                            "positioning_error",
+                            1.0 if hit_top1 == "True" else 2.0  # Simplified error estimation
+                        )
+                        user_needs_validator.record_validation_data(
+                            session_id,
+                            UserNeed.N2_POSITIONING_ACCURACY,
+                            "task_completion_rate",
+                            1.0 if hit_top1 == "True" else 0.5
+                        )
                     
                 except Exception as e:
                     print(f"⚠️ Failed to collect DG metrics for localization: {e}")
@@ -3601,7 +3308,10 @@ async def api_locate(
                     "margin": final_margin,  # 🔧 Use calibrated margin
                     "clarification_id": clarification_id,  # ✅ New: clarification session ID
                     "navigation_instruction": navigation_response,  # ✅ New: dynamic navigation instruction
-                    "current_location": get_location_description(top1_id, site_id) if 'get_location_description' in globals() else f"Current location: {top1_id}",  # ✅ New: current location description
+                    # 🔧 FIX: 之前误把 site_id 当 detail_items 传入，函数体内对 string
+                    # 迭代触发 AttributeError 被 try/except 吞掉，每次都退回兜底字符串。
+                    # 现在传 top1 候选自带的 detail_items，detail 富集才真正生效。
+                    "current_location": get_location_description(top1_id, top1.get('detail_items', [])),
                     "next_action": get_next_action(top1_id, site_id, detected_lang),  # ✅ New: next action instruction
                     "candidates": [
                         {
@@ -3753,41 +3463,12 @@ async def api_locate(
                 top2_score = float(candidates[1].get("score", 0.0))
             margin = max(0.0, top1_score - top2_score)
             
-            # 🔧 NEW: 内容相关性检查
-            caption_lower = cap.lower()
-            top1_node = None
-            for candidate in candidates:
-                if candidate.get("id") == top1_id:
-                    top1_node = candidate
-                    break
-            
-            # 如果top1与caption内容不匹配，降低置信度
-            if top1_node and 'text' in top1_node:
-                node_text = top1_node['text'].lower()
-                content_match_score = 0
-                
-                # 检查关键词匹配
-                caption_words = set(caption_lower.split())
-                node_words = set(node_text.split())
-                common_words = caption_words.intersection(node_words)
-                
-                if len(common_words) > 0:
-                    content_match_score = len(common_words) / max(len(caption_words), len(node_words))
-                
-                            # 如果内容匹配度低，降低置信度
-            if content_match_score < 0.15:  # 进一步降低阈值到0.15
-                adjusted_confidence = top1_score * 0.6  # 降低40%（更严格）
-                print(f"⚠️ 内容匹配度低({content_match_score:.2f})，调整置信度: {top1_score:.3f} → {adjusted_confidence:.3f}")
-                top1_score = adjusted_confidence
-            
-            # 🔧 NEW: 额外的语义检查 - 如果caption包含"desk"但top1不是desk相关，大幅降低置信度
-            caption_lower = cap.lower()
-            if "desk" in caption_lower and "desk" not in top1_node.get('text', '').lower():
-                # 如果图片描述包含"desk"但识别结果不是desk相关，大幅降低置信度
-                adjusted_confidence = top1_score * 0.5  # 降低50%
-                print(f"⚠️ 语义不匹配：图片包含'desk'但识别为'{top1_id}'，大幅降低置信度: {top1_score:.3f} → {adjusted_confidence:.3f}")
-                top1_score = adjusted_confidence
-            
+            # 🔧 REMOVED: 后置 content-relevance × 0.6 / semantic-mismatch ×0.5 块。
+            # 该块有缩进 bug（content_match_score 在外层 if 不命中时未定义即被引用），
+            # 且仅在 retriever 异常时才到达；硬编码 "desk" 关键词的语义检查与 dual-channel
+            # 校准管线（calibrate_confidence + apply_continuity_boost）冲突。已去掉，
+            # 保持 top1_score 原样返回。
+
             print(f"🔧 返回成功的fused top-1结果: {top1_id} (confidence: {top1_score:.3f}, margin: {margin:.3f})")
             return {
                 "req_id": req_id,
@@ -3812,9 +3493,9 @@ async def api_locate(
                 "retrieval_method": "fused_top1_no_candidates"
             }
     
-    # Fallback to legacy retrieval
+    # Fallback to legacy retrieval (uses the module-level EMB SentenceTransformer
+    # instance from L1161 — no need to re-import the class here)
     print("Using legacy retrieval system")
-    from sentence_transformers import SentenceTransformer
     def embed_text(t: str):
         return EMB.encode([t], normalize_embeddings=True, convert_to_numpy=True)[0].astype(np.float32).reshape(1,-1)
     item = SCENE[site_id]
@@ -3920,63 +3601,6 @@ class QAIn(BaseModel):
     text: str
     lang: str = "en"
 
-def generate_navigation_context(site_id: str, lang: str = "en") -> str:
-    """Generate dynamic navigation context based on current site and language"""
-    if site_id == "SCENE_A_MS":
-        if lang == "zh":
-            return """你是一个室内导航助手，专门帮助用户在 Maker Space 中导航。
-
-当前位置：Maker Space 入口内侧
-可用地标：
-- 3D打印机工作台：直行约6步，约4米
-- 玻璃门到中庭：继续直行约7步，约5米
-- 二维码书架：在你的左侧
-- 组件抽屉墙：在你的右侧
-- 绿色回收箱：入口附近
-- 地面纸箱：第5步附近，需要减速绕行
-
-用户可以通过拍照来更新当前位置信息。"""
-        else:
-            return """You are an indoor navigation assistant, specifically helping users navigate in the Maker Space.
-
-Current location: Inside the Maker Space entrance
-Available landmarks:
-- 3D printer table: Walk straight about 6 steps, roughly 4 meters
-- Glass doors to atrium: Continue straight about 7 more steps, roughly 5 meters
-- QR-code bookshelf: To your left
-- Component drawer wall: To your right
-- Green recycling bin: Near the entrance
-- Box hazard: Near step 5, slow down and bypass
-
-Users can take photos to update their current location information."""
-    
-    elif site_id == "SCENE_B_STUDIO":
-        if lang == "zh":
-            return """你是一个室内导航助手，专门帮助用户在工作室内导航。
-
-当前位置：工作室入口
-可用地标：
-- 大窗：向前5步，约3.5米
-- 橙色沙发旁的椅子：左转后走5步，约3.5米
-- 地面电缆：第3步附近，需要减速
-
-用户可以通过拍照来更新当前位置信息。"""
-        else:
-            return """You are an indoor navigation assistant, specifically helping users navigate in the studio.
-
-Current location: Studio entrance
-Available landmarks:
-- Large window: Walk forward 5 steps, roughly 3.5 meters
-- Chair beside orange sofa: Turn left and walk 5 steps, roughly 3.5 meters
-- Floor cable: Near step 3, slow down
-
-Users can take photos to update their current location information."""
-    
-    else:
-        if lang == "zh":
-            return "你是一个室内导航助手，可以帮助用户进行室内导航。请根据用户的问题提供清晰的指导。"
-        else:
-            return "You are an indoor navigation assistant that can help users with indoor navigation. Please provide clear guidance based on user questions."
 
 @app.post("/api/qa")
 async def api_qa(body: QAIn):
@@ -4061,24 +3685,25 @@ Keep your answer concise and suitable for voice output, using abstract direction
         except Exception as log_error:
             print(f"⚠️ Failed to log location-aware QA: {log_error}")
         
-        # ✅ New: Collect DG metrics for QA interaction
+        # ✅ Collect DG metrics for QA interaction (guarded on collector).
         try:
-            enhanced_metrics_collector.collect_real_time_data(
-                MetricType.USER_BEHAVIOR,
-                body.session_id,
-                {
-                    "action": "qa_interaction",
-                    "site_id": site_id,
-                    "lang": lang,
-                    "user_question": body.text,
-                    "system_response": answer,
-                    "current_location": current_location,
-                    "response_source": "gpt_location_aware"
-                },
-                priority=DataPriority.NORMAL,
-                tags=["navigation", "qa", "gpt", "location_aware"]
-            )
-            
+            if enhanced_metrics_collector:
+                enhanced_metrics_collector.collect_real_time_data(
+                    MetricType.USER_BEHAVIOR,
+                    body.session_id,
+                    {
+                        "action": "qa_interaction",
+                        "site_id": site_id,
+                        "lang": lang,
+                        "user_question": body.text,
+                        "system_response": answer,
+                        "current_location": current_location,
+                        "response_source": "gpt_location_aware"
+                    },
+                    priority=DataPriority.NORMAL,
+                    tags=["navigation", "qa", "gpt", "location_aware"]
+                )
+
             # Record DG4 evaluation (Segmentable and Repeatable Instructions)
             if dg_evaluator:
                 dg_evaluator.dg4_evaluator.record_task_completion(
@@ -4090,13 +3715,14 @@ Keep your answer concise and suitable for voice output, using abstract direction
                     veering_count=0
                 )
             
-            # Record user needs validation data
-            user_needs_validator.record_validation_data(
-                body.session_id,
-                UserNeed.N3_SEGREGATED_INSTRUCTIONS,
-                "instruction_clarity",
-                4  # Assuming good clarity for GPT responses
-            )
+            # Record user needs validation data (guarded — validator not wired yet)
+            if user_needs_validator:
+                user_needs_validator.record_validation_data(
+                    body.session_id,
+                    UserNeed.N3_SEGREGATED_INSTRUCTIONS,
+                    "instruction_clarity",
+                    4  # Assuming good clarity for GPT responses
+                )
             
         except Exception as e:
             print(f"⚠️ Failed to collect DG metrics for QA: {e}")
@@ -4182,129 +3808,7 @@ async def get_session_status(session_id: str):
         )
     }
 
-@app.get("/api/location/verify/{session_id}")
-async def verify_location_and_distance(session_id: str, destination: str = None):
-    """Verify user location and calculate distance to destination"""
-    if session_id not in SESSIONS:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = SESSIONS[session_id]
-    current_location = session.get("current_location")
-    site_id = session.get("site_id")
-    
-    if not current_location:
-        return {
-            "session_id": session_id,
-            "current_location": None,
-            "location_verified": False,
-            "message": "No location information available. Please take a photo first.",
-            "suggestion": "Take a new photo to establish your current location"
-        }
-    
-    # Get location verification details
-    location_history = session.get("location_history", [])
-    recent_locations = [h["location"] for h in location_history[-3:]] if location_history else []
-    location_consistency = len(set(recent_locations)) <= 2 if recent_locations else True
-    
-    # Calculate distance to destination if specified
-    distance_info = None
-    if destination and current_location:
-        distance_info = get_location_distance(current_location, destination, site_id)
-    
-    # Generate verification summary
-    verification_summary = {
-        "session_id": session_id,
-        "current_location": current_location,
-        "site_id": site_id,
-        "location_verified": True,
-        "location_consistency": "consistent" if location_consistency else "inconsistent",
-        "recent_locations": recent_locations,
-        "confidence": session.get("confidence_history", [0])[-1] if session.get("confidence_history") else 0,
-        "last_update": session.get("last_update_time"),
-        "suggestion": "Location looks good" if location_consistency else "Consider retaking photo for better accuracy"
-    }
-    
-    if distance_info and "error" not in distance_info:
-        verification_summary["destination"] = destination
-        verification_summary["distance"] = distance_info
-        verification_summary["navigation_ready"] = True
-    elif destination:
-        verification_summary["destination"] = destination
-        verification_summary["distance"] = {"error": "Route not found"}
-        verification_summary["navigation_ready"] = False
-    
-    return verification_summary
 
-@app.get("/api/location/navigate/{session_id}")
-async def get_navigation_instructions(session_id: str, destination: str):
-    """Get detailed navigation instructions from current location to destination"""
-    if session_id not in SESSIONS:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = SESSIONS[session_id]
-    current_location = session.get("current_location")
-    site_id = session.get("site_id")
-    
-    if not current_location:
-        raise HTTPException(status_code=400, detail="Current location not available. Please take a photo first.")
-    
-    # Get distance information
-    distance_info = get_location_distance(current_location, destination, site_id)
-    
-    if "error" in distance_info:
-        return {
-            "session_id": session_id,
-            "from": current_location,
-            "to": destination,
-            "error": distance_info["error"],
-            "message": f"Cannot find route from {current_location} to {destination}",
-            "suggestion": "Please check the destination name or take a new photo to update your location"
-        }
-    
-    # Generate navigation instructions
-    if site_id == "SCENE_A_MS":
-        # Get language from session
-        lang = session.get("lang", "en")
-        
-        if lang == "zh":
-            instructions = f"""从{current_location}到{destination}的导航指导：
-            
-1. 当前位置：{current_location}
-2. 目标位置：{destination}
-3. 距离：约{distance_info['steps']}步 ({distance_info['meters']}米)
-4. 方向：{distance_info['direction']}
-5. 预计时间：{distance_info['estimated_time']}
-
-导航步骤：
-- 面向{distance_info['direction']}方向
-- 缓慢前进，注意地面障碍物
-- 每步约0.7米，保持稳定节奏
-- 到达目标位置后拍照确认"""
-        else:
-            instructions = f"""Navigation from {current_location} to {destination}:
-            
-1. Current Location: {current_location}
-2. Destination: {destination}
-3. Distance: About {distance_info['steps']} steps ({distance_info['meters']} meters)
-4. Direction: {distance_info['direction']}
-5. Estimated Time: {distance_info['estimated_time']}
-
-Navigation Steps:
-- Face {distance_info['direction']}
-- Walk slowly, watch for ground obstacles
-- Each step is about 0.7 meters, maintain steady pace
-- Take photo to confirm arrival at destination"""
-    else:
-        instructions = f"Navigation instructions for {site_id} are not yet implemented."
-    
-    return {
-        "session_id": session_id,
-        "from": current_location,
-        "to": destination,
-        "distance": distance_info,
-        "instructions": instructions,
-        "navigation_ready": True
-    }
 
 # Startup instructions (execute in project root directory):
 # uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000
@@ -4392,291 +3896,46 @@ def get_detail_based_conversation_enhancement(node_id: str, detail_metadata: lis
         unique_features = detail_item.get("unique_features", [])
         
         enhancement_parts = []
-        
+
+        # 🔧 FIX: 空间标签按 lang 切换，避免英文用户拿到中英混搭输出
+        labels = ({
+            "front": "前方", "left": "左侧", "right": "右侧",
+            "back": "后方", "features": "特色",
+        } if lang == "zh" else {
+            "front": "Front", "left": "Left", "right": "Right",
+            "back": "Back", "features": "Features",
+        })
+
         # 添加空间上下文
         if spatial_relations:
-            if "front" in spatial_relations and spatial_relations["front"] != "n/a":
-                enhancement_parts.append(f"前方：{spatial_relations['front']}")
-            if "left" in spatial_relations and spatial_relations["left"] != "n/a":
-                enhancement_parts.append(f"左侧：{spatial_relations['left']}")
-            if "right" in spatial_relations and spatial_relations["right"] != "n/a":
-                enhancement_parts.append(f"右侧：{spatial_relations['right']}")
-            if "back" in spatial_relations and spatial_relations["back"] != "n/a":
-                enhancement_parts.append(f"后方：{spatial_relations['back']}")
-        
+            for k in ("front", "left", "right", "back"):
+                v = spatial_relations.get(k)
+                if v and v != "n/a":
+                    enhancement_parts.append(f"{labels[k]}: {v}")
+
         # 添加独特特征
         if unique_features:
-            features = [f for f in unique_features if f and f != ""]
+            features = [f for f in unique_features if f]
             if features:
-                enhancement_parts.append(f"特色：{', '.join(features)}")
-        
+                enhancement_parts.append(f"{labels['features']}: {', '.join(features)}")
+
         if enhancement_parts:
             if lang == "zh":
                 return f"环境描述：{'；'.join(enhancement_parts)}。"
             else:
                 return f"Environment: {'; '.join(enhancement_parts)}."
-        
+
         return ""
     except Exception as e:
         print(f"⚠️ Detail enhancement failed: {e}")
         return ""
 
-def generate_ai_spatial_reasoning(caption: str, provider: str, site_id: str, matching_data: dict, detailed_data: list = None) -> str:
-    """Generate AI-powered spatial reasoning based on BLIP caption and textmap analysis"""
-    
-    print(f"🔍 generate_ai_spatial_reasoning called with: provider={provider}, site_id={site_id}")
-    
-    # Detect language
-    lang = detect_language_from_caption(caption, provider)
-    print(f"🌐 Detected language: {lang}")
-    
-    # Get spatial context from textmap
-    spatial_context = extract_spatial_context_from_textmap(matching_data, detailed_data, site_id)
-    print(f"📊 Spatial context keys: {list(spatial_context.keys()) if spatial_context else 'None'}")
-    
-    # Generate AI reasoning prompt
-    reasoning_prompt = create_spatial_reasoning_prompt(caption, spatial_context, site_id, lang)
-    print(f"📝 Generated prompt (first 200 chars): {reasoning_prompt[:200]}...")
-    
-    # Use AI to generate spatial reasoning (simulated for now)
-    ai_reasoning = simulate_ai_spatial_reasoning(reasoning_prompt, lang)
-    print(f"🤖 Final AI reasoning output: {ai_reasoning[:100]}...")
-    
-    return ai_reasoning
 
-def extract_spatial_context_from_textmap(matching_data: dict, detailed_data: list, site_id: str) -> dict:
-    """Extract spatial context from textmap data"""
-    context = {
-        "topology": {},
-        "landmarks": {},
-        "spatial_relationships": {},
-        "navigation_policy": {},
-        "current_environment": {}
-    }
-    
-    if matching_data:
-        # Extract topology information
-        if "topology" in matching_data:
-            context["topology"] = matching_data["topology"]
-        
-        # Extract landmarks
-        if "landmarks" in matching_data:
-            context["landmarks"] = matching_data["landmarks"]
-        
-        # Extract navigation policy
-        if "navigation_policy" in matching_data:
-            context["navigation_policy"] = matching_data["navigation_policy"]
-    
-    if detailed_data and site_id == "SCENE_A_MS":
-        # Extract detailed spatial information
-        context["detailed_descriptions"] = []
-        for item in detailed_data:
-            if "nl_text" in item and "struct_text" in item:
-                context["detailed_descriptions"].append({
-                    "id": item["id"],
-                    "natural_language": item["nl_text"],
-                    "structured": item["struct_text"]
-                })
-    
-    return context
 
-def create_spatial_reasoning_prompt(caption: str, spatial_context: dict, site_id: str, lang: str) -> str:
-    """Create AI prompt for spatial reasoning"""
-    
-    if lang == "zh":
-        prompt = f"""你是一个专业的空间推理AI助手。基于以下信息，为用户提供智能的空间分析和导航指导：
 
-**用户拍摄的图像描述**: {caption}
 
-**当前场景**: {site_id}
-
-**空间拓扑信息**: {json.dumps(spatial_context.get('topology', {}), ensure_ascii=False, indent=2)}
-
-**地标信息**: {json.dumps(spatial_context.get('landmarks', {}), ensure_ascii=False, indent=2)}
-
-**导航策略**: {json.dumps(spatial_context.get('navigation_policy', {}), ensure_ascii=False, indent=2)}
-
-请基于以上信息进行空间推理，并给出：
-1. 当前位置分析
-2. 周围环境描述
-3. 可用的导航选项
-4. 下一步行动建议
-
-回答要简洁明了，适合语音播报。"""
-    else:
-        prompt = f"""You are a professional spatial reasoning AI assistant. Based on the following information, provide intelligent spatial analysis and navigation guidance for the user:
-
-**User's Image Description**: {caption}
-
-**Current Scene**: {site_id}
-
-**Spatial Topology**: {json.dumps(spatial_context.get('topology', {}), indent=2)}
-
-**Landmark Information**: {json.dumps(spatial_context.get('landmarks', {}), indent=2)}
-
-**Navigation Policy**: {json.dumps(spatial_context.get('navigation_policy', {}), indent=2)}
-
-Please perform spatial reasoning based on the above information and provide:
-1. Current location analysis
-2. Surrounding environment description
-3. Available navigation options
-4. Next action recommendations
-
-Keep your answer concise and suitable for voice output."""
-    
-    return prompt
-
-def simulate_ai_spatial_reasoning(prompt: str, lang: str) -> str:
-    """Simulate AI spatial reasoning (placeholder for actual AI integration)"""
-    
-    # This is a simulation - in production, you would call an actual AI service
-    # For now, we'll use intelligent rule-based reasoning
-    
-    # 🔧 FIXED: More precise scene detection using regex pattern matching
-    import re
-    
-    # Extract scene_id from the prompt more precisely
-    scene_match = re.search(r'\*\*当前场景\*\*:\s*(\w+)|Current Scene.*?:\s*(\w+)', prompt)
-    if scene_match:
-        detected_scene = scene_match.group(1) or scene_match.group(2)
-        print(f"🔍 Detected scene from prompt: {detected_scene}")
-    else:
-        # Fallback: check if prompt contains scene information
-        if "SCENE_A_MS" in prompt and "SCENE_B_STUDIO" not in prompt:
-            detected_scene = "SCENE_A_MS"
-        elif "SCENE_B_STUDIO" in prompt and "SCENE_A_MS" not in prompt:
-            detected_scene = "SCENE_B_STUDIO"
-        else:
-            # Default to SCENE_A_MS if ambiguous
-            detected_scene = "SCENE_A_MS"
-            print(f"⚠️ Ambiguous scene detection, defaulting to: {detected_scene}")
-    
-    print(f"🎯 Final scene determination: {detected_scene}")
-    
-    if detected_scene == "SCENE_A_MS":
-        if lang == "zh":
-            return """基于您的照片和空间分析，我识别出您当前在Maker Space环境中。
-
-**空间分析**：
-- 您位于一个现代化的制造创新工作空间
-- 周围有3D打印设备、工作台和存储系统
-- 空间布局开放，便于协作和制作
-
-**环境特征**：
-- 明亮的照明系统
-- 工业风格的天花板，暴露的管道和装置
-- 灰色乙烯基地板，带有黄色线条标记活动区域
-
-**可用导航选项**：
-1. 向前直行约4步到达3D打印机桌
-2. 右转约2步到达组件抽屉墙
-3. 左转约2步到达二维码书架区域
-
-**建议行动**：根据您的目标，我建议先直行到3D打印机桌，那里是空间的核心工作区域。"""
-        else:
-            return """Based on your photo and spatial analysis, I've identified that you're currently in a Maker Space environment.
-
-**Spatial Analysis**:
-- You're located in a modern manufacturing and innovation workspace
-- Surrounded by 3D printing equipment, workbenches, and storage systems
-- Open space layout conducive to collaboration and fabrication
-
-**Environmental Features**:
-- Bright lighting system
-- Industrial-style ceiling with exposed pipes and fixtures
-- Gray vinyl flooring with yellow lines marking activity areas
-
-**Available Navigation Options**:
-1. Walk straight forward about 4 steps to reach the 3D printer table
-2. Turn right about 2 steps to reach the component drawer wall
-3. Turn left about 2 steps to reach the QR code bookshelf area
-
-**Recommended Action**: Based on your goal, I suggest walking straight to the 3D printer table, which is the core work area of the space."""
-    
-    elif detected_scene == "SCENE_B_STUDIO":
-        if lang == "zh":
-            return """基于您的照片和空间分析，我识别出您当前在工作室工作环境中。
-
-**空间分析**：
-- 您位于一个多功能工作和会议环境
-- 结合了办公、研发和休闲区域
-- 空间布局灵活，支持创意协作
-
-**环境特征**：
-- 大落地窗让阳光充足
-- 独特设计的绿色和蓝绿色休闲椅
-- 多显示器工作站和办公椅
-
-**可用导航选项**：
-1. 向前直行约5步到达大窗区域
-2. 左转约5步到达橙色沙发旁的椅子
-3. 直行约3步到达工作室中央区域
-
-**建议行动**：根据您的目标，我建议先向前直行到大窗区域，那里视野开阔，适合观察和思考。"""
-        else:
-            return """Based on your photo and spatial analysis, I've identified that you're currently in a studio workspace environment.
-
-**Spatial Analysis**:
-- You're located in a multifunctional work and meeting environment
-- Combines office, research and development, and leisure areas
-- Flexible space layout supporting creative collaboration
-
-**Environmental Features**:
-- Large floor-to-ceiling windows allowing abundant sunlight
-- Uniquely designed green and teal lounge chairs
-- Multi-monitor workstations and office chairs
-
-**Available Navigation Options**:
-1. Walk straight forward about 5 steps to reach the large window area
-2. Turn left about 5 steps to reach the chair beside the orange sofa
-3. Walk straight about 3 steps to reach the central studio area
-
-**Recommended Action**: Based on your goal, I suggest walking straight forward to the large window area, which offers an open view and is ideal for observation and reflection."""
-    
-    else:
-        print(f"⚠️ Unknown scene detected: {detected_scene}, using default response")
-        if lang == "zh":
-            return "基于您的照片，我正在分析当前空间环境。请稍等，我将为您提供详细的空间分析和导航指导。"
-        else:
-            return "Based on your photo, I'm analyzing the current spatial environment. Please wait while I provide you with detailed spatial analysis and navigation guidance."
-
-def get_ai_enhanced_preset_output(caption: str, provider: str, site_id: str) -> str:
-    """Get AI-enhanced preset output based on BLIP caption and textmap analysis"""
-    
-    print(f"🔍 get_ai_enhanced_preset_output called with: provider={provider}, site_id={site_id}")
-    
-    # Get matching data from textmap
-    matching_data = get_matching_data(provider, site_id)
-    print(f"📊 Matching data keys: {list(matching_data.keys()) if matching_data else 'None'}")
-    
-    # Get detailed data if available
-    detailed_data = get_detailed_matching_data(site_id) if site_id == "SCENE_A_MS" else []
-    print(f"📊 Detailed data count: {len(detailed_data)}")
-    
-    # Generate AI spatial reasoning
-    ai_output = generate_ai_spatial_reasoning(caption, provider, site_id, matching_data, detailed_data)
-    print(f"🤖 AI spatial reasoning output: {ai_output[:100]}...")
-    
-    return ai_output
 
 # ✅ Enhanced preset output function that uses AI spatial reasoning
-def get_enhanced_preset_output(caption: str, provider: str, site_id: str, use_ai: bool = True) -> str:
-    """Get enhanced preset output with option to use AI spatial reasoning"""
-    
-    print(f"🔍 get_enhanced_preset_output called with: provider={provider}, site_id={site_id}, use_ai={use_ai}")
-    
-    if use_ai and caption:
-        # Use AI spatial reasoning
-        print("🤖 Using AI spatial reasoning for enhanced output")
-        result = get_ai_enhanced_preset_output(caption, provider, site_id)
-        print(f"🤖 AI-enhanced output result: {result[:100]}...")
-        return result
-    else:
-        # Fall back to traditional preset output
-        print("📚 Using traditional preset output")
-        result = get_preset_output(provider, site_id)
-        print(f"📚 Traditional preset output result: {result[:100]}...")
-        return result
 
 # ============================================================================
 # ✅ New: DG Optimization API Endpoints
@@ -4691,6 +3950,8 @@ async def collect_dg_metrics(
     tags: List[str] = None
 ):
     """Collect DG optimization metrics"""
+    if not enhanced_metrics_collector:
+        raise HTTPException(status_code=503, detail="Metrics collector not wired (see README §8)")
     try:
         # Convert string to enum
         metric_type_enum = MetricType(metric_type)
@@ -4719,6 +3980,8 @@ async def collect_dg_metrics(
 @app.get("/api/dg/metrics/export/{session_id}")
 async def export_session_metrics(session_id: str, format: str = "csv"):
     """Export session metrics"""
+    if not enhanced_metrics_collector:
+        raise HTTPException(status_code=503, detail="Metrics collector not wired (see README §8)")
     try:
         if format.lower() == "csv":
             filename = f"session_{session_id}_metrics.csv"
@@ -4745,6 +4008,8 @@ async def export_session_metrics(session_id: str, format: str = "csv"):
 @app.get("/api/dg/metrics/analytics/{session_id}")
 async def get_metrics_analytics(session_id: str):
     """Get analytics report for a session"""
+    if not enhanced_metrics_collector:
+        raise HTTPException(status_code=503, detail="Metrics collector not wired (see README §8)")
     try:
         report = enhanced_metrics_collector.generate_analytics_report(session_id)
         return report
@@ -4754,6 +4019,8 @@ async def get_metrics_analytics(session_id: str):
 @app.get("/api/dg/metrics/stats")
 async def get_metrics_collection_stats():
     """Get metrics collection statistics"""
+    if not enhanced_metrics_collector:
+        raise HTTPException(status_code=503, detail="Metrics collector not wired (see README §8)")
     try:
         stats = enhanced_metrics_collector.get_collection_stats()
         return stats
@@ -4786,6 +4053,8 @@ async def get_discrimination_metrics(session_id: str, tie_threshold: float = 0.0
 @app.post("/api/dg/metrics/session/{session_id}/close")
 async def close_metrics_session(session_id: str):
     """Close a metrics collection session"""
+    if not enhanced_metrics_collector:
+        raise HTTPException(status_code=503, detail="Metrics collector not wired (see README §8)")
     try:
         enhanced_metrics_collector.close_session(session_id)
         return {
@@ -4944,6 +4213,8 @@ async def validate_indoor_gml_compliance(gml_content: str):
 @app.get("/api/dg/user_needs/validation/{session_id}")
 async def get_user_needs_validation(session_id: str):
     """Get user needs validation report"""
+    if not user_needs_validator:
+        raise HTTPException(status_code=503, detail="User needs validator not wired (see README §8)")
     try:
         report = user_needs_validator.generate_comprehensive_report(session_id)
         return report
@@ -4958,10 +4229,12 @@ async def record_user_needs_data(
     value: Any
 ):
     """Record user needs validation data"""
+    if not user_needs_validator:
+        raise HTTPException(status_code=503, detail="User needs validator not wired (see README §8)")
     try:
         # Convert string to enum
         need_enum = UserNeed(user_need)
-        
+
         user_needs_validator.record_validation_data(session_id, need_enum, metric_name, value)
         return {
             "session_id": session_id,
@@ -4976,6 +4249,8 @@ async def record_user_needs_data(
 @app.get("/api/dg/user_needs/matrix")
 async def get_user_needs_matrix():
     """Get user needs to design goals mapping matrix"""
+    if not user_needs_validator:
+        raise HTTPException(status_code=503, detail="User needs validator not wired (see README §8)")
     try:
         matrix = user_needs_validator.get_requirement_goal_matrix()
         return {
