@@ -21,7 +21,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 # Reuse the dataset loader from sweep_fusion (same alias map, same photo paths)
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent))                      # backend/tools/
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))        # backend/   (topology_eval moved here)
 from sweep_fusion import load_dataset, ALIAS_STRUCT_FROM_DETAIL
 from topology_eval import is_useful   # paper-equivalent ±1-hop metric
 
@@ -209,7 +210,7 @@ def evaluate(model_id="google/siglip-base-patch16-224", text_mode="rich",
         print(f"  [{nid}]\n    {node_descs[nid][:160]}...")
 
     t0 = time.time()
-    text_inputs = proc(text=texts, return_tensors="pt", padding="max_length", truncation=True)
+    text_inputs = proc(text=texts, return_tensors="pt", padding="max_length", max_length=64, truncation=True)
     with torch.no_grad():
         text_embeds = model.get_text_features(**text_inputs)
     text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
@@ -252,7 +253,7 @@ def evaluate(model_id="google/siglip-base-patch16-224", text_mode="rich",
             )
             caption = (cap_resp.choices[0].message.content or "").strip()
             captions_log.append({"file": Path(it["file"]).name, "caption": caption})
-            cap_inputs = proc(text=[caption], return_tensors="pt", padding="max_length", truncation=True)
+            cap_inputs = proc(text=[caption], return_tensors="pt", padding="max_length", max_length=64, truncation=True)
             with torch.no_grad():
                 q_embed = model.get_text_features(**cap_inputs)
             q_embed = q_embed / q_embed.norm(dim=-1, keepdim=True)

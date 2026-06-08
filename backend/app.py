@@ -833,6 +833,18 @@ if ENABLE_SIGLIP:
         print(f"⚠️ SigLIP retriever init failed: {_e}")
         siglip_retriever = None
 
+# 🆕 Topology prior: boost SigLIP candidates that are topology-neighbours of the
+# user's previous location (sequential-movement assumption). Loaded lazily; if
+# topology_eval import fails, prior is skipped silently.
+TOPOLOGY_PRIOR_SAME_BOOST     = float(os.getenv("TOPOLOGY_PRIOR_SAME_BOOST",     "0.05"))  # cosine units
+TOPOLOGY_PRIOR_NEIGHBOR_BOOST = float(os.getenv("TOPOLOGY_PRIOR_NEIGHBOR_BOOST", "0.025"))
+try:
+    from topology_eval import STRUCT_TO_TOPOLOGY as _STRUCT_TO_TOPO, _ADJ as _TOPO_ADJ
+    print(f"🔧 Topology prior enabled: same_boost={TOPOLOGY_PRIOR_SAME_BOOST}, neighbor_boost={TOPOLOGY_PRIOR_NEIGHBOR_BOOST}")
+except Exception as _e:
+    print(f"⚠️ Topology prior disabled ({_e})")
+    _STRUCT_TO_TOPO, _TOPO_ADJ = {}, {}
+
 # 🔧 Fusion hyperparameters — env-tunable so an outer driver can sweep them.
 # All defaults are the existing hardcoded values; changing nothing keeps current
 # behavior. See backend/tools/sweep_fusion.py for the search driver.
@@ -3002,6 +3014,41 @@ async def api_locate(
         try:
             print(f"🆕 SigLIP retrieval path for {site_id}")
             siglip_results = siglip_retriever.predict(img, top_k=5, site_id=site_id)
+
+            # 🆕 Topology prior: if we have a previous location for this session,
+            # boost candidates that are in the same topology cell (+SAME) or a
+            # 1-hop neighbour (+NEIGHBOR). Re-rank by boosted cosine, recompute
+            # confidence/margin. No-op when there's no prev location or the
+            # mapping is unavailable.
+            prev_loc = SESSIONS.get(session_id, {}).get("current_location")
+            prior_used = False
+            if prev_loc and _STRUCT_TO_TOPO:
+                prev_topo = _STRUCT_TO_TOPO.get(prev_loc)
+                if prev_topo:
+                    prev_neighbors = _TOPO_ADJ.get(prev_topo, set())
+                    import math as _math
+                    for c in siglip_results:
+                        c_topo = _STRUCT_TO_TOPO.get(c["node_id"])
+                        boost = 0.0
+                        if c_topo == prev_topo:
+                            boost = TOPOLOGY_PRIOR_SAME_BOOST
+                        elif c_topo and c_topo in prev_neighbors:
+                            boost = TOPOLOGY_PRIOR_NEIGHBOR_BOOST
+                        c["score_raw"] = c["score"]
+                        c["score"] = c["score"] + boost
+                        c["topo_boost"] = boost
+                        # Recompute confidence using the boosted cosine via the
+                        # same sigmoid mapping siglip_retriever uses
+                        c["confidence"] = max(0.0, min(1.0,
+                            1.0 / (1.0 + _math.exp(-12.0 * (c["score"] - 0.15)))))
+                    # Re-sort by boosted score; rank field reflects new order
+                    siglip_results.sort(key=lambda x: -x["score"])
+                    for r, c in enumerate(siglip_results):
+                        c["rank"] = r
+                    prior_used = True
+                    print(f"🔧 Topology prior: prev={prev_loc} (cell {prev_topo}) → "
+                          f"re-ranked. new top1={siglip_results[0]['node_id']}")
+
             top1 = siglip_results[0]
             top2 = siglip_results[1] if len(siglip_results) > 1 else {"confidence": 0.0, "score": 0.0}
             top1_id = top1["node_id"]
