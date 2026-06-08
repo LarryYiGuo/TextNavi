@@ -39,7 +39,7 @@ TAXONOMY_MODERATE = {
     "poi06_small_open_3d_printer":   "ms_printer_bench",
     "poi07_cardboard_boxes":         "ms_storage_corner",
     "poi08_to_atrium":               "ms_storage_corner",
-    "poi09_qr_bookshelf":            "ms_chair_on_yline",
+    "poi09_chair_on_yline":          "ms_chair_on_yline",  # 🔧 renamed from poi09_qr_bookshelf for visual accuracy
     "poi10_metal_display_cabinet":   "ms_storage_corner",
     # SenseB — keep all (8 distinct enough)
     "poi11_di_hub_glass_box":          "poi11_di_hub_glass_box",
@@ -62,7 +62,7 @@ TAXONOMY_AGGRESSIVE = {
     "poi06_small_open_3d_printer":   "ms_workshop",
     "poi07_cardboard_boxes":         "ms_workshop",
     "poi08_to_atrium":               "ms_workshop",
-    "poi09_qr_bookshelf":            "ms_chair_on_yline",
+    "poi09_chair_on_yline":          "ms_chair_on_yline",  # 🔧 renamed from poi09_qr_bookshelf for visual accuracy
     "poi10_metal_display_cabinet":   "ms_workshop",
     # SenseB — group by zone
     "poi11_di_hub_glass_box":          "studio_desks",

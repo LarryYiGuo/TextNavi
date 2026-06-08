@@ -27,7 +27,7 @@ STRUCT_TO_TOPOLOGY = {
     "poi06_small_open_3d_printer": "poi_3d_printer_table",    # printer cluster
     "poi07_cardboard_boxes":       "poi_3d_printer_table",    # boxes are on printer bench
     "poi08_to_atrium":             "atrium_entry",            # atrium-bound
-    "poi09_qr_bookshelf":          "dp_bookshelf_qr",         # name match
+    "poi09_chair_on_yline":        "poi_component_drawer_wall",  # 🔧 was poi09_qr_bookshelf → dp_bookshelf_qr; photos (IMG_0109/0119) show chair on yellow line in front of the drawer wall, not the QR bookshelf
     "poi10_metal_display_cabinet": "poi_component_drawer_wall",  # cabinet area
 
     # SenseB — 8 struct nodes → 5 topology cells

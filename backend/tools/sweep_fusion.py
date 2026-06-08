@@ -46,7 +46,7 @@ ALIAS_STRUCT_FROM_DETAIL = {
     "storage_corner":       "poi06_small_open_3d_printer",
     "orange_sofa_corner":   "poi07_cardboard_boxes",
     "desks_cluster":        "poi08_to_atrium",
-    "chair_on_yline":       "poi09_qr_bookshelf",
+    "chair_on_yline":       "poi09_chair_on_yline",  # 🔧 photos show chair+drawer wall, not a QR bookshelf — renamed for accuracy
     "small_table_mid":      "poi10_metal_display_cabinet",
 }
 

@@ -434,7 +434,8 @@ def enhanced_ft_retrieval(caption: str, retriever, site_id: str, detailed_data: 
                 "poi06_small_open_3d_printer": "storage_corner",
                 "poi07_cardboard_boxes": "orange_sofa_corner",
                 "poi08_to_atrium": "desks_cluster",
-                "poi09_qr_bookshelf": "chair_on_yline",
+                "poi09_chair_on_yline": "chair_on_yline",  # 🔧 renamed from poi09_qr_bookshelf (photos = chair+drawer wall, not bookshelf)
+                "poi09_qr_bookshelf":   "chair_on_yline",  # backward-compat: legacy structure file (Sense_A_Finetuned.fixed.jsonl, merged_v2 paper data) still uses old id
                 "poi10_metal_display_cabinet": "small_table_mid"
             }
             
@@ -491,7 +492,8 @@ def find_node_details_by_hint(node_id: str, detailed_data: list) -> list:
         "poi06_small_open_3d_printer": "storage_corner",
         "poi07_cardboard_boxes": "orange_sofa_corner",
         "poi08_to_atrium": "desks_cluster",
-        "poi09_qr_bookshelf": "chair_on_yline",
+        "poi09_chair_on_yline": "chair_on_yline",  # 🔧 renamed from poi09_qr_bookshelf
+        "poi09_qr_bookshelf":   "chair_on_yline",  # backward-compat for legacy structure file
         "poi10_metal_display_cabinet": "small_table_mid",
     }
     
@@ -844,6 +846,16 @@ try:
 except Exception as _e:
     print(f"⚠️ Topology prior disabled ({_e})")
     _STRUCT_TO_TOPO, _TOPO_ADJ = {}, {}
+
+# 🆕 Goal-aware navigation: BFS over topology graph + voice-friendly instruction
+# synthesis. Activated when a session has `goal_node_id` set (via /api/start or
+# /api/set_goal). Falls back silently to the legacy generator if import fails.
+try:
+    import nav_router as _nav_router
+    print(f"🔧 nav_router loaded: {len(_nav_router.KNOWN_NODES)} known goal nodes")
+except Exception as _e:
+    print(f"⚠️ nav_router disabled ({_e})")
+    _nav_router = None
 
 # 🔧 Fusion hyperparameters — env-tunable so an outer driver can sweep them.
 # All defaults are the existing hardcoded values; changing nothing keeps current
@@ -2340,7 +2352,7 @@ def get_unified_retriever():
                         "poi06_small_open_3d_printer": ["storage_corner", "small printer", "open printer"],
                         "poi07_cardboard_boxes": ["orange_sofa_corner", "cardboard boxes", "boxes"],
                         "poi08_to_atrium": ["desks_cluster", "atrium", "to atrium"],
-                        "poi09_qr_bookshelf": ["chair_on_yline", "qr bookshelf", "bookshelf"],
+                        "poi09_chair_on_yline": ["chair_on_yline", "office chair", "yellow line chair", "chair"],  # 🔧 renamed from poi09_qr_bookshelf; aliases now match the actual visual content
                         "poi10_metal_display_cabinet": ["small_table_mid", "metal cabinet", "display cabinet"]
                     }
                     
@@ -2854,20 +2866,31 @@ class StartIn(BaseModel):
     site_id: str               # SCENE_A_MS / SCENE_B_STUDIO
     opening_provider: str      # base / ft
     lang: str = "en"           # en / zh
+    goal_node_id: Optional[str] = None   # 🆕 Optional goal struct node (e.g. "poi05_desk_3d_printer")
 
 @app.post("/api/start")
 def api_start(body: StartIn):
+    # 🆕 Validate optional goal up-front (silent ignore on unknown id when
+    # nav_router isn't loaded — old clients keep working).
+    goal_id = None
+    if body.goal_node_id:
+        if _nav_router is not None and body.goal_node_id not in _nav_router.KNOWN_NODES:
+            raise HTTPException(status_code=400,
+                detail=f"Unknown goal_node_id: {body.goal_node_id}")
+        goal_id = body.goal_node_id
+
     # ✅ New: Enhanced session initialization with location tracking
     SESSIONS[body.session_id] = {
-        "site_id": body.site_id, 
-        "opening_provider": body.opening_provider, 
+        "site_id": body.site_id,
+        "opening_provider": body.opening_provider,
         "lang": body.lang,
         "current_location": None,           # 当前预测位置
         "location_history": [],             # 位置历史记录
         "orientation_history": [],          # 朝向历史记录
         "confidence_history": [],           # 置信度历史记录
         "last_update_time": datetime.utcnow().isoformat(),  # 最后更新时间
-        "photo_count": 0                   # 拍照计数
+        "photo_count": 0,                  # 拍照计数
+        "goal_node_id": goal_id,           # 🆕 Optional goal struct node
     }
     
     # Initialize photo count tracking
@@ -2878,7 +2901,69 @@ def api_start(body: StartIn):
     
     table = HARD_OUTPUTS_EN if body.lang=="en" else HARD_OUTPUTS_ZH
     say = table[body.site_id][body.opening_provider]
-    return {"mode":"orient","say":[say],"site_id":body.site_id,"opening_provider":body.opening_provider,"lang":body.lang}
+    return {"mode":"orient","say":[say],"site_id":body.site_id,"opening_provider":body.opening_provider,"lang":body.lang,"goal_node_id":goal_id}
+
+
+# 🆕 Goal-aware navigation: set/update the user's destination on an existing
+# session. Accepts either a struct node id (exact match against the 18 known
+# nodes) or a free-form natural-language description (matched via SigLIP text
+# similarity against the same 18 node templates).
+class SetGoalIn(BaseModel):
+    session_id: str
+    goal_node_id: Optional[str] = None   # exact id, e.g. "poi05_desk_3d_printer"
+    goal_text: Optional[str] = None      # or free-form, e.g. "the small open 3D printer"
+
+@app.post("/api/set_goal")
+def api_set_goal(body: SetGoalIn):
+    if body.session_id not in SESSIONS:
+        raise HTTPException(status_code=404, detail="Session not found. Call /api/start first.")
+    if _nav_router is None:
+        raise HTTPException(status_code=503, detail="nav_router not loaded; goal-aware nav unavailable.")
+    if not body.goal_node_id and not body.goal_text:
+        raise HTTPException(status_code=400, detail="Provide goal_node_id or goal_text.")
+
+    sess = SESSIONS[body.session_id]
+    site_id = sess.get("site_id")
+    resolved_id: Optional[str] = None
+    match_score: Optional[float] = None
+    source = ""
+
+    if body.goal_node_id:
+        if body.goal_node_id not in _nav_router.KNOWN_NODES:
+            raise HTTPException(status_code=400,
+                detail=f"Unknown goal_node_id: {body.goal_node_id}")
+        # Soft scene check: warn if cross-scene but don't reject — caller may
+        # legitimately be moving between scenes.
+        meta = _nav_router.STRUCT_META.get(body.goal_node_id, {})
+        if site_id and meta.get("scene") and meta["scene"] != site_id:
+            print(f"⚠️ Goal {body.goal_node_id} is in {meta['scene']}, session is in {site_id}")
+        resolved_id = body.goal_node_id
+        source = "explicit_id"
+    else:
+        # Free-form text → SigLIP cosine match against the 18 node descriptions.
+        if siglip_retriever is None:
+            raise HTTPException(status_code=503,
+                detail="SigLIP retriever not loaded; goal_text matching unavailable.")
+        match = _nav_router.match_goal_text(body.goal_text, siglip_retriever, site_id=site_id)
+        if not match:
+            raise HTTPException(status_code=400,
+                detail=f"Could not match goal_text='{body.goal_text}' to any known node.")
+        resolved_id = match["node_id"]
+        match_score = match["score"]
+        source = "text_match"
+
+    sess["goal_node_id"] = resolved_id
+    sess["last_update_time"] = datetime.utcnow().isoformat()
+    print(f"🎯 Goal set: session={body.session_id} -> {resolved_id} (source={source})")
+
+    return {
+        "session_id":   body.session_id,
+        "goal_node_id": resolved_id,
+        "source":       source,
+        "match_score":  match_score,
+        "short_label":  _nav_router.STRUCT_META.get(resolved_id, {}).get("short_label", ""),
+    }
+
 
 @app.post("/api/locate")
 async def api_locate(
@@ -3056,6 +3141,26 @@ async def api_locate(
             margin = max(0.0, top1["confidence"] - top2["confidence"])
             low_conf = (confidence < LOWCONF_SCORE_TH) or (margin < LOWCONF_MARGIN_TH)
 
+            # 🆕 Teleport detection (Plan D): if the user's previous predicted
+            # location and this one are 2+ topology hops apart, that's
+            # physically improbable between two consecutive photos — almost
+            # certainly a localisation error rather than the user sprinting
+            # across the building. Force low_conf so the goal-aware branch
+            # asks for a retake instead of routing on a bogus current node.
+            teleport_detected = False
+            teleport_prev = None
+            if prev_loc and prev_loc != top1_id and _STRUCT_TO_TOPO:
+                try:
+                    from topology_eval import topo_distance as _topo_d
+                    _d = _topo_d(prev_loc, top1_id)
+                    if _d >= 2:
+                        teleport_detected = True
+                        teleport_prev = prev_loc
+                        low_conf = True
+                        print(f"⚠️ Teleport detected: prev={prev_loc} → top1={top1_id} (topo distance={_d}); forcing low_conf")
+                except Exception as _te:
+                    print(f"⚠️ teleport check failed: {_te}")
+
             # Bearing — best-effort from BLIP caption (kept for FE compatibility)
             t = cap.lower()
             bearing = ""
@@ -3066,12 +3171,69 @@ async def api_locate(
             elif "behind" in t or "back" in t:
                 bearing = "behind"
 
-            # Language + navigation instruction (reuse existing helpers)
+            # Language + navigation instruction.
+            # 🆕 Goal-aware path: when the session has a goal_node_id, the
+            # nav_router synthesises a destination-aware instruction (BFS over
+            # the topology graph + voice template). Otherwise fall back to the
+            # legacy per-node "you are at X" generator so old clients keep
+            # working unchanged.
             detected_lang = detect_language_from_caption(cap, provider)
             matching_data = get_matching_data(provider, site_id) or {}
-            navigation_response = generate_dynamic_navigation_response(
-                site_id, top1_id, confidence, low_conf, matching_data, detected_lang, top1
-            )
+            session_obj = SESSIONS.get(session_id, {})
+            goal_id = session_obj.get("goal_node_id")
+            # Prefer the explicit session lang ("en"/"zh") over the
+            # BLIP-caption-detected one — BLIP captions are always English so
+            # detect_language_from_caption returns "en" for zh users too.
+            nav_lang = session_obj.get("lang", detected_lang) or detected_lang
+            nav_meta = {"mode": "legacy", "goal_node_id": None}
+            if goal_id and _nav_router is not None:
+                # Suppress goal-aware nav when localisation is low-confidence:
+                # routing on a wrong current node is worse than asking for a retake.
+                if low_conf:
+                    if teleport_detected:
+                        # Specific message: the previous and current predicted
+                        # locations are too far apart to be physically real.
+                        if nav_lang == "zh":
+                            navigation_response = (
+                                "看起来您一下子移动了较远的距离，可能定位有偏差。"
+                                "请停在原地重新拍一张，我会继续帮您导航到目的地。")
+                        else:
+                            navigation_response = (
+                                "It looks like you've moved further than expected "
+                                "in one step — that's unusual, please retake the "
+                                "photo from where you are and I'll keep routing "
+                                "you to the goal.")
+                        nav_meta = {"mode": "goal_teleport", "goal_node_id": goal_id,
+                                    "teleport_prev": teleport_prev,
+                                    "teleport_cur": top1_id}
+                    else:
+                        if nav_lang == "zh":
+                            navigation_response = (
+                                "我对当前位置不太确定，请换个角度再拍一张，"
+                                "我会继续帮您导航到目的地。")
+                        else:
+                            navigation_response = (
+                                "I'm not confident about your current location — "
+                                "please retake the photo from a different angle "
+                                "and I'll continue routing you to the goal.")
+                        nav_meta = {"mode": "goal_low_conf", "goal_node_id": goal_id}
+                else:
+                    navigation_response = _nav_router.generate_instruction(
+                        top1_id, goal_id, lang=nav_lang
+                    )
+                    plan = _nav_router.find_path(top1_id, goal_id)
+                    nav_meta = {
+                        "mode":         "goal_aware",
+                        "goal_node_id": goal_id,
+                        "status":       plan["status"],
+                        "current_topo": plan["current_topo"],
+                        "goal_topo":    plan["goal_topo"],
+                        "hops":         plan["hops"],
+                    }
+            else:
+                navigation_response = generate_dynamic_navigation_response(
+                    site_id, top1_id, confidence, low_conf, matching_data, detected_lang, top1
+                )
 
             # Session location update
             orientation_info = track_orientation(session_id, cap, top1_id)
@@ -3117,8 +3279,9 @@ async def api_locate(
                 ],
                 "retrieval_method": "siglip_so400m_v1",
                 "siglip_score_top1": top1["score"],
+                "nav": nav_meta,
             }
-            print(f"✅ SigLIP top1={top1_id} conf={confidence:.3f} margin={margin:.3f} low_conf={low_conf}")
+            print(f"✅ SigLIP top1={top1_id} conf={confidence:.3f} margin={margin:.3f} low_conf={low_conf} nav={nav_meta['mode']}")
             return response
         except Exception as _e:
             print(f"⚠️ SigLIP path failed: {_e} — falling through to legacy retrieval")
