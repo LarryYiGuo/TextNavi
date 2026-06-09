@@ -10,6 +10,9 @@ __pycache__/
 # Per-trial uvicorn stdout from tools/sweep_fusion.py
 backend/logs/sweep/*.log
 
+# Ad-hoc smoketest uvicorn logs (one-off manual test runs)
+backend/logs/test/
+
 # Secrets (OPENAI_API_KEY etc.) — never commit
 .env
 .env.*
