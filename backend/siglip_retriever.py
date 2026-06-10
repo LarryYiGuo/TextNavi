@@ -3,10 +3,13 @@
 Replaces the legacy BLIP-caption + dual-channel-fusion pipeline with a single
 SigLIP forward pass: image encoder → cosine vs pre-computed node text embeddings.
 
-On the labeled 37-photo benchmark with the hand-curated `data/textmap_clean.jsonl`,
-this achieves **useful top-1 = 73.0%** (paper Table 4 metric: predicted struct
-node maps to the same topology cell as GT, or is a 1-hop neighbour) — matching
-the paper's fine-tuned baseline (74% SenseA, 82% SenseB).
+On the labeled 37-photo benchmark with the hand-curated `data/textmap_clean.jsonl`
+and the truncation-aware text template below, this achieves **useful top-1 =
+91.9%** (paper Table 4 metric: predicted struct node maps to the same topology
+cell as GT, or is a 1-hop neighbour; scene-filtered candidate pool, matching
+production) — well above the paper's fine-tuned baseline (74% SenseA, 82%
+SenseB). Verified identical offline (tools/eval_siglip.py --text clean) and
+live (/api/locate production protocol).
 
 Model: `google/siglip-so400m-patch14-384` (~870MB, ~1.4 s/photo CPU). Loaded
 once at module import; text embeddings precomputed once.
@@ -43,10 +46,13 @@ class SigLipRetriever:
                 continue
             records.append(json.loads(line))
         self.node_ids = [r["node_id"] for r in records]
-        self.node_texts = [
-            f"A photo of {r['node_id'].replace('_', ' ')}. {r['nl_text']}"
-            for r in records
-        ]
+        # nl_text only — no "A photo of {node_id}." prefix. SigLIP's tokenizer
+        # hard-truncates at 64 tokens (model_max_length), and the prefix wasted
+        # ~10 of them on a noisy slug ("poi09 chair on yline"), pushing the
+        # discriminative tail of every hand-written description out of the
+        # window. Dropping it: useful top-1 81.1% -> 91.9% (scene-filtered,
+        # 37-photo benchmark, no topology prior).
+        self.node_texts = [r["nl_text"] for r in records]
         # Scene assignment per node, for site_id filtering at query time
         self.node_scenes = [r.get("scene", "") for r in records]
         print(f"   nodes loaded: {len(self.node_ids)}")
@@ -77,6 +83,13 @@ class SigLipRetriever:
         # Filter to the requested scene if specified
         eligible = [(i, c) for i, c in enumerate(cosines)
                     if not site_id or self.node_scenes[i] == site_id]
+        if not eligible:
+            # Fail loud: returning [] made the caller's `results[0]` raise an
+            # IndexError that was easy to swallow upstream. An unknown site_id
+            # is a caller bug, not a retrieval miss.
+            raise ValueError(
+                f"No textmap nodes match site_id={site_id!r}; "
+                f"known scenes: {sorted(set(self.node_scenes))}")
         eligible.sort(key=lambda x: -x[1])
         top = eligible[:top_k]
 

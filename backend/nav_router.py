@@ -30,11 +30,12 @@ Design notes
 from __future__ import annotations
 
 import json
+import re
 from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from topology_eval import STRUCT_TO_TOPOLOGY, _ADJ as TOPO_ADJ
+from topology_eval import STRUCT_TO_TOPOLOGY, _ADJ as TOPO_ADJ, _TOPOLOGY_TO_SCENE as TOPO_SCENE
 
 ROOT = Path(__file__).resolve().parent  # backend/
 TEXTMAP_PATH = ROOT / "data" / "textmap_clean.jsonl"
@@ -203,6 +204,16 @@ def find_path(current_struct: Optional[str], goal_struct: Optional[str]) -> dict
                 frontier.append(nb)
 
     if goal_topo not in parent:
+        # The two scene graphs are disconnected, so a goal in the other scene
+        # is *always* unreachable. Surface that as its own status — telling
+        # the user to "retake the photo" (the generic unknown message) can
+        # never fix a cross-scene goal.
+        cur_scene = TOPO_SCENE.get(current_topo)
+        goal_scene = TOPO_SCENE.get(goal_topo)
+        if cur_scene and goal_scene and cur_scene != goal_scene:
+            return {"status": "cross_scene", "current_topo": current_topo,
+                    "goal_topo": goal_topo, "goal_scene": goal_scene,
+                    "path": [], "hops": 0}
         return {"status": "unknown", "current_topo": current_topo,
                 "goal_topo": goal_topo, "path": [], "hops": 0}
 
@@ -237,6 +248,20 @@ def generate_instruction(current_struct: Optional[str],
         if is_zh:
             return f"您已到达目的地：{goal_label}。"
         return f"You have arrived at {goal_label}."
+
+    if status == "cross_scene":
+        scene_names = {
+            "SCENE_A_MS":     ("the Maker Space", "创客空间"),
+            "SCENE_B_STUDIO": ("the Studio",      "工作室"),
+        }
+        en_name, zh_name = scene_names.get(plan.get("goal_scene", ""),
+                                           ("another area", "另一个区域"))
+        if is_zh:
+            return (f"目的地{goal_label}在{zh_name}，不在当前区域。"
+                    f"请先移动到{zh_name}，到达后再拍照继续导航。")
+        return (f"The destination {goal_label} is in {en_name}, not in your "
+                f"current area. Please move to {en_name} first, then take a "
+                f"photo there to continue.")
 
     if status == "unknown":
         # Distinguish the two flavours: goal-not-in-map vs current-not-placed
@@ -285,14 +310,21 @@ def generate_instruction(current_struct: Optional[str],
     goal_topo_friendly = _topo_friendly(goal_topo, lang)
 
     # Suppress the redundant "look for X there" tail when the goal's short
-    # label is essentially the same as the destination cell's friendly name
-    # (e.g. cell `poi_3d_printer_table` → "the 3D printer area" and struct
-    # `poi05_desk_3d_printer` → "desk 3d printer" — close enough that saying
-    # both is awkward).
+    # label adds nothing beyond the destination cell's friendly name: either
+    # a direct substring (also covers zh), or every content token of the goal
+    # label already appears in the cell name. A label with extra
+    # disambiguating tokens (e.g. "desk 3d printer" vs "the 3D printer area"
+    # — "desk" is new information) is NOT redundant and the tail is kept.
     def _label_is_redundant(label: str, cell_friendly: str) -> bool:
         a = label.lower().strip()
         b = cell_friendly.lower().strip()
-        return a and (a in b or b.endswith(a))
+        if not a or not b:
+            return False
+        if a in b:
+            return True
+        ta = set(re.findall(r"[a-z0-9]+", a))
+        tb = set(re.findall(r"[a-z0-9]+", b))
+        return bool(ta) and ta <= tb
 
     if hops == 1:
         if _label_is_redundant(goal_label, next_friendly):

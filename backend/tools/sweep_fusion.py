@@ -102,6 +102,12 @@ def free_port():
 
 def start_uvicorn(env_overrides, port, log_path):
     env = os.environ.copy()
+    # This tool sweeps the LEGACY dual-channel fusion hyperparameters. With
+    # ENABLE_SIGLIP left at its default (true), /api/locate short-circuits in
+    # the SigLIP branch and never touches FUSION_* — all 27 grid combos would
+    # measure the identical SigLIP path. Force the legacy pipeline unless the
+    # caller explicitly overrides.
+    env.setdefault("ENABLE_SIGLIP", "false")
     env.update({k: str(v) for k, v in env_overrides.items()})
     log_path.parent.mkdir(parents=True, exist_ok=True)
     f = log_path.open("w")
@@ -169,12 +175,19 @@ def run_dataset(port, items, session_prefix="sweep"):
     return rows
 
 
+# The legacy structure file (merged_v2 paper data) still emits the old
+# poi09_qr_bookshelf id; GT labels use the renamed id. Normalise predictions
+# before comparing so legacy-mode sweeps don't systematically miss poi09.
+_PRED_ALIAS = {"poi09_qr_bookshelf": "poi09_chair_on_yline"}
+
+
 def metrics(rows):
     # The first photo per session is warmup (no real prediction) — exclude
     trials = [r for r in rows if not r["is_first"] and r["conf"] is not None]
     if not trials:
         return {"n": 0}
-    hits = sum(1 for r in trials if r["pred"] == r["gt_struct"])
+    hits = sum(1 for r in trials
+               if _PRED_ALIAS.get(r["pred"], r["pred"]) == r["gt_struct"])
     confs = [r["conf"] for r in trials]
     margins = [r["margin"] for r in trials if r["margin"] is not None]
     lows = sum(1 for r in trials if r["low_conf"])

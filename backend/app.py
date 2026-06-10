@@ -838,8 +838,13 @@ if ENABLE_SIGLIP:
 # 🆕 Topology prior: boost SigLIP candidates that are topology-neighbours of the
 # user's previous location (sequential-movement assumption). Loaded lazily; if
 # topology_eval import fails, prior is skipped silently.
-TOPOLOGY_PRIOR_SAME_BOOST     = float(os.getenv("TOPOLOGY_PRIOR_SAME_BOOST",     "0.05"))  # cosine units
-TOPOLOGY_PRIOR_NEIGHBOR_BOOST = float(os.getenv("TOPOLOGY_PRIOR_NEIGHBOR_BOOST", "0.025"))
+# Default 0 = prior OFF. With the truncation-fixed text templates the raw
+# SigLIP retrieval reaches 91.9% useful top-1 and the prior now HURTS
+# (86.5% with the old 0.05/0.025 boosts — it drags correct predictions toward
+# the previous cell). Knobs kept for future floor plans where raw retrieval
+# is weaker and sequential context helps again.
+TOPOLOGY_PRIOR_SAME_BOOST     = float(os.getenv("TOPOLOGY_PRIOR_SAME_BOOST",     "0"))  # cosine units
+TOPOLOGY_PRIOR_NEIGHBOR_BOOST = float(os.getenv("TOPOLOGY_PRIOR_NEIGHBOR_BOOST", "0"))
 try:
     from topology_eval import STRUCT_TO_TOPOLOGY as _STRUCT_TO_TOPO, _ADJ as _TOPO_ADJ
     print(f"🔧 Topology prior enabled: same_boost={TOPOLOGY_PRIOR_SAME_BOOST}, neighbor_boost={TOPOLOGY_PRIOR_NEIGHBOR_BOOST}")
@@ -1089,6 +1094,7 @@ def start_clarification_session(session_id: str, site_id: str, req_id: str,
         with open(paths["clar"], "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
                 site_id, run_id, datetime.utcnow().isoformat(), clarification_id, session_id, provider,
+                "trial",  # phase — was missing; row was 14 cols vs the 15-col clar header
                 req_id, 1, "trigger",  # event: trigger
                 "Low confidence triggered", "Clarification started",
                 predicted_node, gt_node_id or "", False
@@ -2353,6 +2359,7 @@ def get_unified_retriever():
                         "poi07_cardboard_boxes": ["orange_sofa_corner", "cardboard boxes", "boxes"],
                         "poi08_to_atrium": ["desks_cluster", "atrium", "to atrium"],
                         "poi09_chair_on_yline": ["chair_on_yline", "office chair", "yellow line chair", "chair"],  # 🔧 renamed from poi09_qr_bookshelf; aliases now match the actual visual content
+                        "poi09_qr_bookshelf": ["chair_on_yline", "office chair", "yellow line chair", "chair"],  # backward-compat: legacy structure file still emits the old id; without this entry the candidate falls into keyword grouping ("shelf"→storage_group) and may be deduped away
                         "poi10_metal_display_cabinet": ["small_table_mid", "metal cabinet", "display cabinet"]
                     }
                     
@@ -2956,12 +2963,17 @@ def api_set_goal(body: SetGoalIn):
     sess["last_update_time"] = datetime.utcnow().isoformat()
     print(f"🎯 Goal set: session={body.session_id} -> {resolved_id} (source={source})")
 
+    meta_out = _nav_router.STRUCT_META.get(resolved_id, {})
+    # Respect the session language for the echoed label (zh users get the
+    # hand-written Chinese label; falls back to English when absent).
+    label_out = (meta_out.get("short_label_zh") or meta_out.get("short_label", "")) \
+        if sess.get("lang") == "zh" else meta_out.get("short_label", "")
     return {
         "session_id":   body.session_id,
         "goal_node_id": resolved_id,
         "source":       source,
         "match_score":  match_score,
-        "short_label":  _nav_router.STRUCT_META.get(resolved_id, {}).get("short_label", ""),
+        "short_label":  label_out,
     }
 
 
@@ -2979,9 +2991,17 @@ async def api_locate(
     # Generate request ID if not provided
     req_id = req_id or str(uuid.uuid4())
     server_recv_ms = _now_ms()
-    
+
     print(f"🔍 API locate called: site_id={site_id}, provider={provider}, first_photo={first_photo}, session_id={session_id}")
-    
+
+    # Validate site_id up-front. A typo'd/unknown site used to slip through:
+    # SigLIP's scene filter returned zero candidates → IndexError → swallowed
+    # by the (formerly broad) except → EVERY request silently degraded to the
+    # low-accuracy legacy pipeline with HTTP 200. Fail loud instead.
+    if site_id not in ("SCENE_A_MS", "SCENE_B_STUDIO"):
+        raise HTTPException(status_code=400,
+            detail=f"Unknown site_id: {site_id!r} (expected SCENE_A_MS or SCENE_B_STUDIO)")
+
     # 🔧 FIX: 把原来重复的两段 70 行 warmup 分支合并成一条。
     # 触发条件 = 客户端显式 first_photo=True，或者会话对该 provider+site 还未拍过任何照片。
     # 之前第二个分支在 CSV 行里多写了 2 个空列，导致 low_conf_rule 之后的 timing 列错位 — 一并修掉。
@@ -3060,21 +3080,27 @@ async def api_locate(
             "retrieval_method": "preset_output",
         }
     
+    # Initialize log paths BEFORE the BLIP call — the failure handler below
+    # writes a CSV row. (Previously initialized only after this block, so a
+    # BLIP failure with logging enabled raised UnboundLocalError → 500 instead
+    # of the intended 400, and the failure row was never written.)
+    paths = _log_paths(provider)
+    _ensure_headers(paths)
+
     # 1) Get image → BLIP generate caption (for subsequent photos)
     try:
         img = await image.read()
         cap = hf_caption(img)
     except Exception as e:
-        # Log failure
-        # paths is already initialized above
-        
         # ✅ Only write when logging is enabled
         enabled, run_id = _is_logging(session_id, provider)
         if enabled:
             with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+                # 22 columns, aligned with HEADERS["locate"]:
+                # phase carries the failure marker; caption..margin are empty.
                 csv.writer(f).writerow([
                     site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
-                    f"BLIP_FAILED:{e}", "", "", "", "", "", gt_node_id or "", "", "", "",
+                    f"BLIP_FAILED:{e}", "", "", "", "", "", "", gt_node_id or "", "", "", "",
                     True, f"BLIP_failed:{e}", client_start_ms or "", server_recv_ms, _now_ms()
                 ])
         raise HTTPException(status_code=400, detail=f"BLIP failed: {e}")
@@ -3085,206 +3111,254 @@ async def api_locate(
     # references relied on — pyflakes flagged it).
     SESSIONS["_photo_count"][session_key] += 1
     photo_count = SESSIONS["_photo_count"][session_key]
+    # Mirror into the session object: /api/session/location reads
+    # SESSIONS[sid]["photo_count"], which was initialised to 0 and never
+    # incremented anywhere — the endpoint always reported 0.
+    if session_id in SESSIONS:
+        SESSIONS[session_id]["photo_count"] = photo_count
     print(f"📸 Photo #{photo_count} for session {session_key}")
-
-    # Initialize paths early (used by both SigLIP and legacy paths for CSV logging)
-    paths = _log_paths(provider)
-    _ensure_headers(paths)
 
     # 🆕 SigLIP short-circuit (ENABLE_SIGLIP=true and retriever loaded).
     # Single forward pass: image→cosine vs clean-textmap embeddings.
-    # 73.0% useful-top1 on the labeled benchmark vs ~50% for the legacy
-    # BLIP+fusion pipeline. See backend/siglip_retriever.py.
+    # 91.9% useful-top1 (truncation-fixed templates, verified offline AND via
+    # this live path) vs ~50% for the legacy BLIP+fusion pipeline.
+    # See backend/siglip_retriever.py.
+    # 🆕 SigLIP short-circuit retrieval. NARROW try: only the retrieval call
+    # itself may fall back to legacy. Everything downstream (prior re-rank,
+    # nav instruction, session update, CSV, response) used to live inside
+    # this try too — any bug there silently degraded the request to the
+    # ~50%-accuracy legacy pipeline AFTER the session had already been
+    # updated (double location writes, old-namespace ids, masked errors).
+    siglip_results = None
     if siglip_retriever is not None:
         try:
             print(f"🆕 SigLIP retrieval path for {site_id}")
             siglip_results = siglip_retriever.predict(img, top_k=5, site_id=site_id)
+        except Exception as _e:
+            print(f"⚠️ SigLIP retrieval failed: {_e} — falling through to legacy retrieval")
+            siglip_results = None
 
-            # 🆕 Topology prior: if we have a previous location for this session,
-            # boost candidates that are in the same topology cell (+SAME) or a
-            # 1-hop neighbour (+NEIGHBOR). Re-rank by boosted cosine, recompute
-            # confidence/margin. No-op when there's no prev location or the
-            # mapping is unavailable.
-            prev_loc = SESSIONS.get(session_id, {}).get("current_location")
-            prior_used = False
-            if prev_loc and _STRUCT_TO_TOPO:
-                prev_topo = _STRUCT_TO_TOPO.get(prev_loc)
-                if prev_topo:
-                    prev_neighbors = _TOPO_ADJ.get(prev_topo, set())
-                    import math as _math
-                    for c in siglip_results:
-                        c_topo = _STRUCT_TO_TOPO.get(c["node_id"])
-                        boost = 0.0
-                        if c_topo == prev_topo:
-                            boost = TOPOLOGY_PRIOR_SAME_BOOST
-                        elif c_topo and c_topo in prev_neighbors:
-                            boost = TOPOLOGY_PRIOR_NEIGHBOR_BOOST
-                        c["score_raw"] = c["score"]
-                        c["score"] = c["score"] + boost
-                        c["topo_boost"] = boost
-                        # Recompute confidence using the boosted cosine via the
-                        # same sigmoid mapping siglip_retriever uses
-                        c["confidence"] = max(0.0, min(1.0,
-                            1.0 / (1.0 + _math.exp(-12.0 * (c["score"] - 0.15)))))
-                    # Re-sort by boosted score; rank field reflects new order
-                    siglip_results.sort(key=lambda x: -x["score"])
-                    for r, c in enumerate(siglip_results):
-                        c["rank"] = r
-                    prior_used = True
-                    print(f"🔧 Topology prior: prev={prev_loc} (cell {prev_topo}) → "
-                          f"re-ranked. new top1={siglip_results[0]['node_id']}")
+    if siglip_results:
 
-            top1 = siglip_results[0]
-            top2 = siglip_results[1] if len(siglip_results) > 1 else {"confidence": 0.0, "score": 0.0}
-            top1_id = top1["node_id"]
-            confidence = top1["confidence"]
-            margin = max(0.0, top1["confidence"] - top2["confidence"])
-            low_conf = (confidence < LOWCONF_SCORE_TH) or (margin < LOWCONF_MARGIN_TH)
+        # 🆕 Topology prior: if we have a previous location for this session,
+        # boost candidates that are in the same topology cell (+SAME) or a
+        # 1-hop neighbour (+NEIGHBOR). Re-rank by boosted cosine, recompute
+        # confidence/margin. No-op when there's no prev location or the
+        # mapping is unavailable.
+        prev_loc = SESSIONS.get(session_id, {}).get("current_location")
+        prior_used = False
+        if prev_loc and _STRUCT_TO_TOPO:
+            prev_topo = _STRUCT_TO_TOPO.get(prev_loc)
+            if prev_topo:
+                prev_neighbors = _TOPO_ADJ.get(prev_topo, set())
+                import math as _math
+                for c in siglip_results:
+                    c_topo = _STRUCT_TO_TOPO.get(c["node_id"])
+                    boost = 0.0
+                    if c_topo == prev_topo:
+                        boost = TOPOLOGY_PRIOR_SAME_BOOST
+                    elif c_topo and c_topo in prev_neighbors:
+                        boost = TOPOLOGY_PRIOR_NEIGHBOR_BOOST
+                    c["score_raw"] = c["score"]
+                    c["score"] = c["score"] + boost
+                    c["topo_boost"] = boost
+                    # Recompute confidence using the boosted cosine via the
+                    # same sigmoid mapping siglip_retriever uses
+                    c["confidence"] = max(0.0, min(1.0,
+                        1.0 / (1.0 + _math.exp(-12.0 * (c["score"] - 0.15)))))
+                # Re-sort by boosted score; rank field reflects new order
+                siglip_results.sort(key=lambda x: -x["score"])
+                for r, c in enumerate(siglip_results):
+                    c["rank"] = r
+                prior_used = True
+                print(f"🔧 Topology prior: prev={prev_loc} (cell {prev_topo}) → "
+                      f"re-ranked. new top1={siglip_results[0]['node_id']}")
 
-            # 🆕 Teleport detection (Plan D): if the user's previous predicted
-            # location and this one are 2+ topology hops apart, that's
-            # physically improbable between two consecutive photos — almost
-            # certainly a localisation error rather than the user sprinting
-            # across the building. Force low_conf so the goal-aware branch
-            # asks for a retake instead of routing on a bogus current node.
-            teleport_detected = False
-            teleport_prev = None
-            if prev_loc and prev_loc != top1_id and _STRUCT_TO_TOPO:
-                try:
-                    from topology_eval import topo_distance as _topo_d
+        top1 = siglip_results[0]
+        top2 = siglip_results[1] if len(siglip_results) > 1 else {"confidence": 0.0, "score": 0.0}
+        top1_id = top1["node_id"]
+        confidence = top1["confidence"]
+        margin = max(0.0, top1["confidence"] - top2["confidence"])
+        low_conf = (confidence < LOWCONF_SCORE_TH) or (margin < LOWCONF_MARGIN_TH)
+
+        # 🆕 Teleport detection (Plan D): if the user's previous predicted
+        # location and this one are 2+ topology hops apart, that's
+        # physically improbable between two consecutive photos — almost
+        # certainly a localisation error rather than the user sprinting
+        # across the building. Force low_conf so the goal-aware branch
+        # asks for a retake instead of routing on a bogus current node.
+        teleport_detected = False
+        teleport_prev = None
+        if prev_loc and prev_loc != top1_id and _STRUCT_TO_TOPO:
+            try:
+                from topology_eval import topo_distance as _topo_d, to_topology as _to_topo
+                # Only check when BOTH ends map to a topology cell. An
+                # unmapped prev (e.g. a legacy-namespace id written by the
+                # fallback path) would make topo_distance return max_d+1
+                # and fire a guaranteed false teleport — mirror the
+                # topology prior, which skips unmapped ids gracefully.
+                if _to_topo(prev_loc) and _to_topo(top1_id):
                     _d = _topo_d(prev_loc, top1_id)
                     if _d >= 2:
                         teleport_detected = True
                         teleport_prev = prev_loc
                         low_conf = True
                         print(f"⚠️ Teleport detected: prev={prev_loc} → top1={top1_id} (topo distance={_d}); forcing low_conf")
-                except Exception as _te:
-                    print(f"⚠️ teleport check failed: {_te}")
+            except Exception as _te:
+                print(f"⚠️ teleport check failed: {_te}")
 
-            # Bearing — best-effort from BLIP caption (kept for FE compatibility)
-            t = cap.lower()
-            bearing = ""
-            if "left" in t:
-                bearing = "left"
-            elif "right" in t:
-                bearing = "right"
-            elif "behind" in t or "back" in t:
-                bearing = "behind"
+        # Bearing — best-effort from BLIP caption (kept for FE compatibility)
+        t = cap.lower()
+        bearing = ""
+        if "left" in t:
+            bearing = "left"
+        elif "right" in t:
+            bearing = "right"
+        elif "behind" in t or "back" in t:
+            bearing = "behind"
 
-            # Language + navigation instruction.
-            # 🆕 Goal-aware path: when the session has a goal_node_id, the
-            # nav_router synthesises a destination-aware instruction (BFS over
-            # the topology graph + voice template). Otherwise fall back to the
-            # legacy per-node "you are at X" generator so old clients keep
-            # working unchanged.
-            detected_lang = detect_language_from_caption(cap, provider)
-            matching_data = get_matching_data(provider, site_id) or {}
-            session_obj = SESSIONS.get(session_id, {})
-            goal_id = session_obj.get("goal_node_id")
-            # Prefer the explicit session lang ("en"/"zh") over the
-            # BLIP-caption-detected one — BLIP captions are always English so
-            # detect_language_from_caption returns "en" for zh users too.
-            nav_lang = session_obj.get("lang", detected_lang) or detected_lang
-            nav_meta = {"mode": "legacy", "goal_node_id": None}
-            if goal_id and _nav_router is not None:
-                # Suppress goal-aware nav when localisation is low-confidence:
-                # routing on a wrong current node is worse than asking for a retake.
-                if low_conf:
-                    if teleport_detected:
-                        # Specific message: the previous and current predicted
-                        # locations are too far apart to be physically real.
-                        if nav_lang == "zh":
-                            navigation_response = (
-                                "看起来您一下子移动了较远的距离，可能定位有偏差。"
-                                "请停在原地重新拍一张，我会继续帮您导航到目的地。")
-                        else:
-                            navigation_response = (
-                                "It looks like you've moved further than expected "
-                                "in one step — that's unusual, please retake the "
-                                "photo from where you are and I'll keep routing "
-                                "you to the goal.")
-                        nav_meta = {"mode": "goal_teleport", "goal_node_id": goal_id,
-                                    "teleport_prev": teleport_prev,
-                                    "teleport_cur": top1_id}
-                    else:
-                        if nav_lang == "zh":
-                            navigation_response = (
-                                "我对当前位置不太确定，请换个角度再拍一张，"
-                                "我会继续帮您导航到目的地。")
-                        else:
-                            navigation_response = (
-                                "I'm not confident about your current location — "
-                                "please retake the photo from a different angle "
-                                "and I'll continue routing you to the goal.")
-                        nav_meta = {"mode": "goal_low_conf", "goal_node_id": goal_id}
-                else:
-                    navigation_response = _nav_router.generate_instruction(
-                        top1_id, goal_id, lang=nav_lang
-                    )
-                    plan = _nav_router.find_path(top1_id, goal_id)
-                    nav_meta = {
-                        "mode":         "goal_aware",
-                        "goal_node_id": goal_id,
-                        "status":       plan["status"],
-                        "current_topo": plan["current_topo"],
-                        "goal_topo":    plan["goal_topo"],
-                        "hops":         plan["hops"],
-                    }
-            else:
-                navigation_response = generate_dynamic_navigation_response(
-                    site_id, top1_id, confidence, low_conf, matching_data, detected_lang, top1
+        # Language + navigation instruction.
+        # 🆕 Goal-aware path: when the session has a goal_node_id, the
+        # nav_router synthesises a destination-aware instruction (BFS over
+        # the topology graph + voice template). Otherwise fall back to the
+        # legacy per-node "you are at X" generator so old clients keep
+        # working unchanged.
+        detected_lang = detect_language_from_caption(cap, provider)
+        matching_data = get_matching_data(provider, site_id) or {}
+        session_obj = SESSIONS.get(session_id, {})
+        goal_id = session_obj.get("goal_node_id")
+        # Prefer the explicit session lang ("en"/"zh") over the
+        # BLIP-caption-detected one — BLIP captions are always English so
+        # detect_language_from_caption returns "en" for zh users too.
+        nav_lang = session_obj.get("lang", detected_lang) or detected_lang
+        nav_meta = {"mode": "legacy", "goal_node_id": None}
+        if goal_id and _nav_router is not None:
+            # Cross-scene goal takes priority over the low_conf gate: top1 is
+            # always a node of the requested site (predict filters by site_id),
+            # so the scene-vs-scene verdict is reliable even when the exact
+            # node is uncertain — and no amount of retaking can ever fix a
+            # goal that lives in the other scene.
+            _plan_pre = _nav_router.find_path(top1_id, goal_id)
+            if _plan_pre["status"] == "cross_scene":
+                navigation_response = _nav_router.generate_instruction(
+                    top1_id, goal_id, lang=nav_lang
                 )
+                nav_meta = {
+                    "mode":         "goal_aware",
+                    "goal_node_id": goal_id,
+                    "status":       "cross_scene",
+                    "current_topo": _plan_pre["current_topo"],
+                    "goal_topo":    _plan_pre["goal_topo"],
+                    "hops":         0,
+                }
+            # Suppress goal-aware nav when localisation is low-confidence:
+            # routing on a wrong current node is worse than asking for a retake.
+            elif low_conf:
+                if teleport_detected:
+                    # Specific message: the previous and current predicted
+                    # locations are too far apart to be physically real.
+                    if nav_lang == "zh":
+                        navigation_response = (
+                            "看起来您一下子移动了较远的距离，可能定位有偏差。"
+                            "请停在原地重新拍一张，我会继续帮您导航到目的地。")
+                    else:
+                        navigation_response = (
+                            "It looks like you've moved further than expected "
+                            "in one step — that's unusual, please retake the "
+                            "photo from where you are and I'll keep routing "
+                            "you to the goal.")
+                    nav_meta = {"mode": "goal_teleport", "goal_node_id": goal_id,
+                                "teleport_prev": teleport_prev,
+                                "teleport_cur": top1_id}
+                else:
+                    if nav_lang == "zh":
+                        navigation_response = (
+                            "我对当前位置不太确定，请换个角度再拍一张，"
+                            "我会继续帮您导航到目的地。")
+                    else:
+                        navigation_response = (
+                            "I'm not confident about your current location — "
+                            "please retake the photo from a different angle "
+                            "and I'll continue routing you to the goal.")
+                    nav_meta = {"mode": "goal_low_conf", "goal_node_id": goal_id}
+            else:
+                navigation_response = _nav_router.generate_instruction(
+                    top1_id, goal_id, lang=nav_lang
+                )
+                plan = _nav_router.find_path(top1_id, goal_id)
+                nav_meta = {
+                    "mode":         "goal_aware",
+                    "goal_node_id": goal_id,
+                    "status":       plan["status"],
+                    "current_topo": plan["current_topo"],
+                    "goal_topo":    plan["goal_topo"],
+                    "hops":         plan["hops"],
+                }
+        else:
+            navigation_response = generate_dynamic_navigation_response(
+                site_id, top1_id, confidence, low_conf, matching_data, detected_lang, top1
+            )
 
-            # Session location update
-            orientation_info = track_orientation(session_id, cap, top1_id)
+        # Session location update — skipped when teleport was detected:
+        # the prediction is suspected bogus, and writing it would poison
+        # the next frame's topology prior AND make the next (correct)
+        # prediction look like a teleport too — one bad frame would
+        # cascade into several. Keeping the previous stable location lets
+        # the user recover with a single retake.
+        orientation_info = track_orientation(session_id, cap, top1_id)
+        if not teleport_detected:
             update_session_location(session_id, top1_id, confidence, orientation_info)
+        else:
+            print(f"📍 Session location NOT updated (teleport suspected); keeping prev={teleport_prev}")
 
-            # Log to CSV (warmup-style row plus the locate fields the rest of the
-            # pipeline writes; we keep the schema consistent with the legacy path)
-            enabled, run_id = _is_logging(session_id, provider)
-            top2_id = top2.get("node_id", "")
-            hit_top1 = "" if not gt_node_id else ("True" if top1_id == gt_node_id else "False")
-            hit_top2 = "" if not gt_node_id else ("True" if top2_id == gt_node_id else "False")
-            with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow([
-                    site_id, run_id if enabled else "SIGLIP",
-                    datetime.utcnow().isoformat(), req_id, session_id, provider,
-                    "siglip", cap[:200],
-                    top1_id, f"{confidence:.4f}", top2_id, f"{top2.get('confidence', 0.0):.4f}",
-                    f"{margin:.4f}",
-                    gt_node_id or "", hit_top1, hit_top2, "",
-                    str(low_conf).lower(), "siglip_default",
-                    client_start_ms or "", server_recv_ms, _now_ms()
-                ])
+        # Log to CSV (warmup-style row plus the locate fields the rest of the
+        # pipeline writes; we keep the schema consistent with the legacy path)
+        enabled, run_id = _is_logging(session_id, provider)
+        top2_id = top2.get("node_id", "")
+        hit_top1 = "" if not gt_node_id else ("True" if top1_id == gt_node_id else "False")
+        # Cumulative top-2 hit (gt in {top1, top2}) — matches the legacy rows'
+        # semantics so the column is comparable across retrieval paths. The
+        # previous "top2 exact hit" definition systematically under-reported
+        # SigLIP rows whenever top1 was already correct.
+        hit_top2 = "" if not gt_node_id else ("True" if gt_node_id in (top1_id, top2_id) else "False")
+        with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                site_id, run_id if enabled else "SIGLIP",
+                datetime.utcnow().isoformat(), req_id, session_id, provider,
+                "siglip", cap[:200],
+                top1_id, f"{confidence:.4f}", top2_id, f"{top2.get('confidence', 0.0):.4f}",
+                f"{margin:.4f}",
+                gt_node_id or "", hit_top1, hit_top2, "",
+                str(low_conf).lower(), "siglip_default",
+                client_start_ms or "", server_recv_ms, _now_ms()
+            ])
 
-            response = {
-                "req_id": req_id,
-                "caption": cap,
-                "node_id": top1_id,
-                "confidence": confidence,
-                "low_conf": low_conf,
-                "bearing": bearing,
-                "margin": margin,
-                "navigation_instruction": navigation_response,
-                "current_location": get_location_description(top1_id, []),
-                "next_action": get_next_action(top1_id, site_id, detected_lang),
-                "candidates": [
-                    {
-                        "id": c["node_id"],
-                        "score": c["score"],
-                        "confidence": c["confidence"],
-                        "rank": c["rank"],
-                    }
-                    for c in siglip_results
-                ],
-                "retrieval_method": "siglip_so400m_v1",
-                "siglip_score_top1": top1["score"],
-                "nav": nav_meta,
-            }
-            print(f"✅ SigLIP top1={top1_id} conf={confidence:.3f} margin={margin:.3f} low_conf={low_conf} nav={nav_meta['mode']}")
-            return response
-        except Exception as _e:
-            print(f"⚠️ SigLIP path failed: {_e} — falling through to legacy retrieval")
+        response = {
+            "req_id": req_id,
+            "caption": cap,
+            "node_id": top1_id,
+            "confidence": confidence,
+            "low_conf": low_conf,
+            "bearing": bearing,
+            "margin": margin,
+            "navigation_instruction": navigation_response,
+            "current_location": get_location_description(top1_id, []),
+            "next_action": get_next_action(top1_id, site_id, detected_lang),
+            "candidates": [
+                {
+                    "id": c["node_id"],
+                    "score": c["score"],
+                    "confidence": c["confidence"],
+                    "rank": c["rank"],
+                }
+                for c in siglip_results
+            ],
+            "retrieval_method": "siglip_so400m_v1",
+            "siglip_score_top1": top1["score"],
+            "nav": nav_meta,
+        }
+        print(f"✅ SigLIP top1={top1_id} conf={confidence:.3f} margin={margin:.3f} low_conf={low_conf} nav={nav_meta['mode']}")
+        return response
 
     # 2) Try unified dual-channel retrieval first (legacy fallback)
     
@@ -3518,10 +3592,11 @@ async def api_locate(
                     "margin": final_margin,  # 🔧 Use calibrated margin
                     "clarification_id": clarification_id,  # ✅ New: clarification session ID
                     "navigation_instruction": navigation_response,  # ✅ New: dynamic navigation instruction
-                    # 🔧 FIX: 之前误把 site_id 当 detail_items 传入，函数体内对 string
-                    # 迭代触发 AttributeError 被 try/except 吞掉，每次都退回兜底字符串。
-                    # 现在传 top1 候选自带的 detail_items，detail 富集才真正生效。
-                    "current_location": get_location_description(top1_id, top1.get('detail_items', [])),
+                    # 🔧 FIX(×2): 第一次修复传了 top1['detail_items']，但那个字段在
+                    # enhanced_ft_retrieval 里被覆盖成了 int 计数（len），传给
+                    # get_location_description 后切片 int 抛 TypeError 被吞，照旧退回
+                    # 兜底字符串 —— 修复从未生效。真正的列表在 detail_metadata。
+                    "current_location": get_location_description(top1_id, top1.get('detail_metadata', [])),
                     "next_action": get_next_action(top1_id, site_id, detected_lang),  # ✅ New: next action instruction
                     "candidates": [
                         {
@@ -3631,6 +3706,7 @@ async def api_locate(
                     with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
                         csv.writer(f).writerow([
                             site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
+                            "trial",  # phase — was missing; row was 21 cols vs the 22-col header
                             cap,
                             "", "0.0",
                             "", "0.0",
@@ -3755,6 +3831,7 @@ async def api_locate(
         with open(paths["locate"], "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
                 site_id, run_id, datetime.utcnow().isoformat(), req_id, session_id, provider,
+                "trial",  # phase — was missing; row was 21 cols vs the 22-col header
                 cap,
                 top1_id, f"{top1_score:.6f}",
                 top2_id, f"{top2_score:.6f}",
@@ -4342,6 +4419,8 @@ async def record_dg_evaluation(
             "status": "recorded",
             "timestamp": datetime.utcnow().isoformat()
         }
+    except HTTPException:
+        raise  # don't re-wrap deliberate 503/4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Evaluation recording failed: {str(e)}")
 
@@ -4354,6 +4433,8 @@ async def get_dg_evaluation_report(session_id: str):
         
         report = dg_evaluator.generate_evaluation_report(session_id)
         return report
+    except HTTPException:
+        raise  # don't re-wrap deliberate 503/4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
 
@@ -4373,6 +4454,8 @@ async def check_accessibility_compliance(
         
         results = accessibility_checker.check_wcag_compliance(interface_elements, level_enum)
         return results
+    except HTTPException:
+        raise  # don't re-wrap deliberate 503/4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Accessibility check failed: {str(e)}")
 
@@ -4385,6 +4468,8 @@ async def test_voiceover_compatibility(features: Dict[str, Any]):
         
         results = accessibility_checker.test_voiceover_compatibility(features)
         return results
+    except HTTPException:
+        raise  # don't re-wrap deliberate 503/4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"VoiceOver test failed: {str(e)}")
 
@@ -4405,6 +4490,8 @@ async def generate_indoor_gml_map(
             "content_length": len(gml_content),
             "timestamp": datetime.utcnow().isoformat()
         }
+    except HTTPException:
+        raise  # don't re-wrap deliberate 503/4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"IndoorGML generation failed: {str(e)}")
 
@@ -4417,6 +4504,8 @@ async def validate_indoor_gml_compliance(gml_content: str):
         
         validation_results = indoor_gml_generator.validate_standard_compliance(gml_content)
         return validation_results
+    except HTTPException:
+        raise  # don't re-wrap deliberate 503/4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"IndoorGML validation failed: {str(e)}")
 

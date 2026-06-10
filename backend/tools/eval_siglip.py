@@ -101,8 +101,10 @@ def load_clean_descriptions():
             continue
         r = json.loads(line)
         nid = r["node_id"]
-        # SigLIP-friendly framing: short label + the curated nl_text
-        descs[nid] = f"A photo of {nid.replace('_', ' ')}. {r['nl_text']}"
+        # nl_text only — keep in sync with siglip_retriever.py. The old
+        # "A photo of {node_id}." prefix wasted ~10 of SigLIP's hard 64-token
+        # window on a noisy slug; dropping it lifted useful top-1 by ~11 pp.
+        descs[nid] = r["nl_text"]
     return descs
 
 
@@ -203,6 +205,14 @@ def evaluate(model_id="google/siglip-base-patch16-224", text_mode="rich",
     node_descs = build_all_node_descriptions(text_mode)
     rerank_descs = build_all_node_descriptions("rich")   # for reranker prompts
     node_ids = sorted(node_descs.keys())
+    # node → scene map for candidate filtering (mirrors production: /api/locate
+    # always knows site_id and predict() restricts the pool to that scene).
+    node_scene = {}
+    for line in open(DATA / "textmap_clean.jsonl"):
+        line = line.strip()
+        if line:
+            r = json.loads(line)
+            node_scene[r["node_id"]] = r.get("scene", "")
     texts = [node_descs[nid] for nid in node_ids]
     rerank_texts = [rerank_descs[nid] for nid in node_ids]
     print(f"node texts: {len(node_ids)}  (recall mode={text_mode}, rerank mode=rich)")
@@ -264,7 +274,12 @@ def evaluate(model_id="google/siglip-base-patch16-224", text_mode="rich",
                 img_embed = model.get_image_features(**img_inputs)
             img_embed = img_embed / img_embed.norm(dim=-1, keepdim=True)
             sims = (img_embed @ text_embeds.T).squeeze(0)
-        top_idx_recall = sims.argsort(descending=True).tolist()[:rerank_k]
+        # Scene-filter the candidate pool — without this, offline numbers
+        # under-report vs production (cross-scene confusions that can never
+        # happen live, since the client always supplies site_id).
+        order = sims.argsort(descending=True).tolist()
+        eligible = [i for i in order if node_scene.get(node_ids[i]) == it["scene"]]
+        top_idx_recall = (eligible or order)[:rerank_k]
         recall_top5 = [(node_ids[i], float(sims[i])) for i in top_idx_recall]
 
         if itm_model is None and oai_client is None:
