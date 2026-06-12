@@ -3313,16 +3313,23 @@ async def api_locate(
                                 "teleport_prev": teleport_prev,
                                 "teleport_cur": top1_id}
                 else:
+                    # Secondary Prompt tier (paper's middle gate band): invite
+                    # the user to answer a clarifying question — the dialogue
+                    # itself happens via the Ask button → /api/qa; the
+                    # clarification session is opened below so the frontend
+                    # enters clarification mode and RQ3 rounds get logged.
                     if nav_lang == "zh":
                         navigation_response = (
-                            "我对当前位置不太确定，请换个角度再拍一张，"
-                            "我会继续帮您导航到目的地。")
+                            "我对当前位置不太确定。您可以告诉我刚才经过了"
+                            "哪个参照物、大约走了几步（用提问按钮回答），"
+                            "或者换个角度再拍一张。")
                     else:
                         navigation_response = (
-                            "I'm not confident about your current location — "
-                            "please retake the photo from a different angle "
-                            "and I'll continue routing you to the goal.")
-                    nav_meta = {"mode": "goal_low_conf", "goal_node_id": goal_id}
+                            "I'm not sure about your current location. You can "
+                            "tell me the last landmark you passed and roughly "
+                            "how many steps (use the Ask button), or retake "
+                            "the photo from a different angle.")
+                    nav_meta = {"mode": "goal_secondary_prompt", "goal_node_id": goal_id}
             else:
                 navigation_response = _nav_router.generate_instruction(
                     top1_id, goal_id, lang=nav_lang
@@ -3345,6 +3352,40 @@ async def api_locate(
             navigation_response = generate_dynamic_navigation_response(
                 site_id, top1_id, confidence, low_conf, matching_data, nav_lang, top1
             )
+
+        # 🆕 Secondary Prompt tier: a low-confidence frame that is NOT a
+        # teleport opens a clarification session — the response carries
+        # clarification_id, the frontend switches into clarification mode
+        # (App.jsx watches this field) and logs RQ3 dialogue rounds via
+        # /api/metrics/clarification_*. The SigLIP short-circuit previously
+        # never set this field, which silently severed the paper's middle
+        # gate tier (it was only wired into the legacy path, and even there
+        # gated on gt_node_id, i.e. experiment-only). Teleports skip it:
+        # dialogue can't fix a physically implausible position jump — that
+        # tier is an immediate retake.
+        clarification_id = None
+        if low_conf and not teleport_detected:
+            try:
+                clarification_id = start_clarification_session(
+                    session_id, site_id, req_id, top1_id, gt_node_id or "", provider)
+                # Stash this frame's candidates so the clarification answer can
+                # re-match them with topo constraints (the paper's red dashed
+                # arrow): /api/qa boosts candidates near the landmark the user
+                # says they just passed and re-ranks WITHOUT a new photo.
+                if session_id in SESSIONS:
+                    SESSIONS[session_id]["pending_clar"] = {
+                        "clarification_id": clarification_id,
+                        "site_id": site_id,
+                        "candidates": [
+                            (c["node_id"], float(c.get("score_raw", c["score"])))
+                            for c in siglip_results
+                        ],
+                    }
+            except Exception as _ce:
+                print(f"⚠️ clarification session start failed: {_ce}")
+        elif not low_conf and session_id in SESSIONS:
+            # A confident frame supersedes any open clarification context.
+            SESSIONS[session_id].pop("pending_clar", None)
 
         # Session location update — skipped when teleport was detected:
         # the prediction is suspected bogus, and writing it would poison
@@ -3403,6 +3444,7 @@ async def api_locate(
             "retrieval_method": "siglip_so400m_v1",
             "siglip_score_top1": top1["score"],
             "nav": nav_meta,
+            "clarification_id": clarification_id,  # non-null = Secondary Prompt tier active
         }
         print(f"✅ SigLIP top1={top1_id} conf={confidence:.3f} margin={margin:.3f} low_conf={low_conf} nav={nav_meta['mode']}")
         return response
@@ -3946,8 +3988,70 @@ async def api_qa(body: QAIn):
         sess = SESSIONS.get(body.session_id, {})
         site_id = sess.get("site_id", "SCENE_A_MS")
         lang = "zh" if body.lang.lower().startswith("zh") else "en"
-        
+
         print(f"QA request: session={body.session_id}, site={site_id}, lang={lang}, text='{body.text}'")
+
+        # 🆕 Clarification re-match (paper's "re-match with topo constraints"):
+        # while a Secondary Prompt is pending, try to read the user's reply as
+        # a stated landmark ("I just passed the green trash bin"). On a match,
+        # re-rank the STORED photo candidates with a proximity boost around the
+        # stated node — the user's own statement is a far stronger prior than
+        # any guessed one — update the session location and answer with a
+        # fresh route. Falls through to normal GPT QA when nothing matches.
+        pending = sess.get("pending_clar") if isinstance(sess, dict) else None
+        if pending and _nav_router is not None:
+            stated = _nav_router.match_landmark_text(
+                body.text, siglip_retriever, site_id=site_id, lang=lang)
+            if stated:
+                import math as _m
+                from topology_eval import STRUCT_TO_TOPOLOGY as _S2T, _ADJ as _AD
+                s_node = stated["node_id"]
+                s_cell = _S2T.get(s_node)
+                s_neigh = _AD.get(s_cell, set()) if s_cell else set()
+                best_id, best_score = None, float("-inf")
+                for nid, raw in pending.get("candidates", []):
+                    boost = 0.0
+                    if nid == s_node:
+                        boost = 0.20          # user says they just passed it
+                    else:
+                        c = _S2T.get(nid)
+                        if c and c == s_cell:
+                            boost = 0.12      # same topology cell
+                        elif c and c in s_neigh:
+                            boost = 0.06      # 1-hop neighbour cell
+                    if raw + boost > best_score:
+                        best_id, best_score = nid, raw + boost
+                new_top1 = best_id or s_node
+                new_conf = max(0.0, min(1.0, 1.0 / (1.0 + _m.exp(-12.0 * (best_score - 0.15)))))
+                update_session_location(body.session_id, new_top1, new_conf,
+                                        {"orientation": "unknown", "consistent": True, "confidence": 0.8})
+                sess.pop("pending_clar", None)
+
+                goal_id = sess.get("goal_node_id")
+                meta_new = _nav_router.STRUCT_META.get(new_top1, {})
+                loc_label = (meta_new.get("short_label_zh") or meta_new.get("short_label", new_top1)) \
+                    if lang == "zh" else meta_new.get("short_label", new_top1)
+                if goal_id:
+                    instr = _nav_router.generate_instruction(new_top1, goal_id, lang=lang)
+                else:
+                    instr = ("请继续拍照，或告诉我您想去哪里。" if lang == "zh"
+                             else "Take another photo when ready, or tell me where you want to go.")
+                if lang == "zh":
+                    answer = (f"明白了，您刚经过{stated['short_label']}。"
+                              f"结合刚才的照片，您现在应该在{loc_label}附近。{instr}")
+                else:
+                    answer = (f"Got it — you just passed {stated['short_label']}. "
+                              f"Combined with your last photo, you should be near {loc_label}. {instr}")
+                print(f"🔁 Clarification re-match: stated={s_node} → relocalized={new_top1} (conf={new_conf:.3f})")
+                return {
+                    "mode": "qa",
+                    "say": [answer],
+                    "meta": {"source": "clarification_rematch", "site_id": site_id, "lang": lang,
+                             "stated_node": s_node, "relocalized_node": new_top1,
+                             "confidence": new_conf,
+                             "clarification_id": pending.get("clarification_id")},
+                    "source": "clarification_rematch",
+                }
         
         # ✅ New: Generate enhanced location context with secondary location verification
         location_context = generate_location_context_prompt(body.session_id, body.text, site_id, lang)

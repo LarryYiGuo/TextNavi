@@ -417,3 +417,42 @@ def match_goal_text(goal_text: str, retriever, site_id: Optional[str] = None,
         "score":       float(best_c),
         "short_label": _struct_short(nid, "en"),
     }
+
+
+def match_landmark_text(text: str, retriever, site_id: Optional[str] = None,
+                        lang: str = "en") -> Optional[dict]:
+    """Match a user's *stated landmark* ("I just passed the green trash bin")
+    to a known struct node. Used by the Secondary Prompt clarification loop.
+
+    zh: character-bigram overlap against the hand-written zh labels/features
+    (SigLIP's text tower is English-trained, so embedding Chinese input
+    against English node texts scores near-noise). en: SigLIP text-text
+    matching via ``match_goal_text`` with a stricter threshold — a stated
+    landmark drives relocalisation, so a weak match must be rejected.
+
+    Returns ``{'node_id', 'score', 'short_label'}`` or None.
+    """
+    if not text:
+        return None
+
+    if lang == "zh":
+        def _bigrams(s):
+            s = "".join(ch for ch in s if not ch.isspace())
+            return {s[i:i + 2] for i in range(len(s) - 1)}
+        tb = _bigrams(text)
+        best_nid, best_hits = None, 0
+        for nid, m in STRUCT_META.items():
+            if site_id and m.get("scene") and m["scene"] != site_id:
+                continue
+            cand_text = (m.get("short_label_zh") or "") + "".join(m.get("unique_features_zh") or [])
+            hits = len(tb & _bigrams(cand_text))
+            if hits > best_hits:
+                best_nid, best_hits = nid, hits
+        # ≥2 shared bigrams ≈ at least one meaningful 3-char overlap;
+        # 1 bigram is too easy to hit by chance ("打印" appears everywhere).
+        if best_nid and best_hits >= 3:
+            return {"node_id": best_nid, "score": float(best_hits),
+                    "short_label": _struct_short(best_nid, "zh")}
+        return None
+
+    return match_goal_text(text, retriever, site_id=site_id, min_score=0.30)
