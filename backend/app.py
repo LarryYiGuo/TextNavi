@@ -847,7 +847,10 @@ TOPOLOGY_PRIOR_SAME_BOOST     = float(os.getenv("TOPOLOGY_PRIOR_SAME_BOOST",    
 TOPOLOGY_PRIOR_NEIGHBOR_BOOST = float(os.getenv("TOPOLOGY_PRIOR_NEIGHBOR_BOOST", "0"))
 try:
     from topology_eval import STRUCT_TO_TOPOLOGY as _STRUCT_TO_TOPO, _ADJ as _TOPO_ADJ
-    print(f"🔧 Topology prior enabled: same_boost={TOPOLOGY_PRIOR_SAME_BOOST}, neighbor_boost={TOPOLOGY_PRIOR_NEIGHBOR_BOOST}")
+    if TOPOLOGY_PRIOR_SAME_BOOST > 0 or TOPOLOGY_PRIOR_NEIGHBOR_BOOST > 0:
+        print(f"🔧 Topology prior ENABLED: same_boost={TOPOLOGY_PRIOR_SAME_BOOST}, neighbor_boost={TOPOLOGY_PRIOR_NEIGHBOR_BOOST}")
+    else:
+        print("🔧 Topology prior off (boosts = 0; raw SigLIP outperforms prior since the truncation fix)")
 except Exception as _e:
     print(f"⚠️ Topology prior disabled ({_e})")
     _STRUCT_TO_TOPO, _TOPO_ADJ = {}, {}
@@ -1144,16 +1147,22 @@ def end_clarification_session(clarification_id: str, session_id: str, site_id: s
     
     print(f"🔍 Clarification session ended: {clarification_id}, success: {clarification_success}")
 
-def start_error_recovery(session_id: str, site_id: str, error_node: str, 
+# In-flight recovery start times, keyed by recovery_id, so end_error_recovery
+# can compute a real duration (the old code wrote the absolute epoch ms into
+# the recovery_ms column — useless as a duration, and start/end rows had no
+# correlating id).
+RECOVERY_STARTS: dict = {}
+
+def start_error_recovery(session_id: str, site_id: str, error_node: str,
                         correct_node: str, provider: str) -> str:
     """Start error recovery timing, return recovery_id"""
     recovery_id = str(uuid.uuid4())
-    error_start_time = _now_ms()
-    
+    RECOVERY_STARTS[recovery_id] = _now_ms()
+
     # Get log paths and ensure headers
     paths = _log_paths(provider)
     _ensure_headers(paths)
-    
+
     # ✅ Only write when logging is enabled
     enabled, run_id = _is_logging(session_id, provider)
     if enabled:
@@ -1161,9 +1170,11 @@ def start_error_recovery(session_id: str, site_id: str, error_node: str,
             csv.writer(f).writerow([
                 site_id, run_id, datetime.utcnow().isoformat(), session_id, provider,
                 "trial",  # phase: trial phase
-                "", error_start_time, error_node, correct_node
+                recovery_id,  # req_id column — correlates the start row with the end row
+                "",           # recovery_ms empty on the start marker (ts_iso has the time)
+                error_node, correct_node
             ])
-    
+
     print(f"⚠️  Error recovery started: {recovery_id}, from {error_node} to {correct_node}")
     return recovery_id
 
@@ -1173,28 +1184,32 @@ def end_error_recovery(recovery_id: str, session_id: str, site_id: str,
     if not provider:
         print("⚠️  Provider not specified for error recovery end")
         return 0
-    
+
     # Get log paths and ensure headers
     paths = _log_paths(provider)
     _ensure_headers(paths)
-    
+
+    # Real duration = now − matched start time (empty when the id is unknown,
+    # e.g. backend restarted between start and end).
+    start_ms = RECOVERY_STARTS.pop(recovery_id, None)
+    recovery_duration = (_now_ms() - start_ms) if start_ms else 0
+
     # ✅ Only write when logging is enabled
     enabled, run_id = _is_logging(session_id, provider)
     if enabled:
-        # Calculate recovery duration (simplified version, direct recording)
-        recovery_duration = _now_ms()  # This can be optimized for actual recovery duration calculation
-        
         with open(paths["recovery"], "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
                 site_id, run_id, datetime.utcnow().isoformat(), session_id, provider,
                 "trial",  # phase: trial phase
-                "", recovery_duration, "", correct_node
+                recovery_id,
+                recovery_duration if start_ms else "",
+                "", correct_node
             ])
-        
+
         print(f"✅ Error recovery completed: {recovery_id}, duration: {recovery_duration}ms")
         return recovery_duration
-    
-    return 0
+
+    return recovery_duration
 
 # ---------- Opening outputs (Independent variables only take effect here) ----------
 HARD_OUTPUTS_EN = {
@@ -2789,6 +2804,7 @@ class ClarificationRound(BaseModel):
     system_answer: str
     predicted_node: str
     gt_node_id: str = None
+    provider: str = "ft"   # 🔧 was missing — the call below passed 8/9 args → TypeError 500 on every request
 
 @app.post("/api/metrics/clarification_round")
 def api_clarification_round(round_data: ClarificationRound):
@@ -2801,7 +2817,8 @@ def api_clarification_round(round_data: ClarificationRound):
         round_data.user_question,
         round_data.system_answer,
         round_data.predicted_node,
-        round_data.gt_node_id
+        round_data.gt_node_id,
+        round_data.provider
     )
     
     print(f"🔍 Clarification round recorded: {round_data.clarification_id}, round {round_data.round_count}")
@@ -2814,6 +2831,7 @@ class ClarificationEnd(BaseModel):
     total_rounds: int
     final_predicted_node: str
     gt_node_id: str
+    provider: str = "ft"   # 🔧 was missing — 6/7 args → TypeError 500
 
 @app.post("/api/metrics/clarification_end")
 def api_clarification_end(end_data: ClarificationEnd):
@@ -2824,7 +2842,8 @@ def api_clarification_end(end_data: ClarificationEnd):
         end_data.site_id,
         end_data.total_rounds,
         end_data.final_predicted_node,
-        end_data.gt_node_id
+        end_data.gt_node_id,
+        end_data.provider
     )
     
     return {"ok": True, "session_ended": end_data.clarification_id}
@@ -2835,6 +2854,7 @@ class ErrorRecoveryStart(BaseModel):
     site_id: str
     error_node: str
     correct_node: str
+    provider: str = "ft"   # 🔧 was missing — 4/5 args → TypeError 500
 
 @app.post("/api/metrics/error_recovery_start")
 def api_error_recovery_start(recovery_data: ErrorRecoveryStart):
@@ -2843,7 +2863,8 @@ def api_error_recovery_start(recovery_data: ErrorRecoveryStart):
         recovery_data.session_id,
         recovery_data.site_id,
         recovery_data.error_node,
-        recovery_data.correct_node
+        recovery_data.correct_node,
+        recovery_data.provider
     )
     
     return {"ok": True, "recovery_id": recovery_id}
@@ -2854,6 +2875,7 @@ class ErrorRecoveryEnd(BaseModel):
     site_id: str
     correct_node: str
     recovery_path: str = ""
+    provider: str = "ft"   # 🔧 was missing — provider defaulted to "" → function returned 0 without writing anything
 
 @app.post("/api/metrics/error_recovery_end")
 def api_error_recovery_end(recovery_data: ErrorRecoveryEnd):
@@ -2863,7 +2885,8 @@ def api_error_recovery_end(recovery_data: ErrorRecoveryEnd):
         recovery_data.session_id,
         recovery_data.site_id,
         recovery_data.correct_node,
-        recovery_data.recovery_path
+        recovery_data.recovery_path,
+        recovery_data.provider
     )
     
     return {"ok": True, "recovery_duration_ms": duration}
@@ -3015,6 +3038,10 @@ async def api_locate(
         reason = "first_photo flag" if first_photo else f"photo_count==0 for {session_key}"
         print(f"📸 Warmup path ({reason})")
         SESSIONS["_photo_count"][session_key] = 1
+        # Mirror into the session object too (same as the trial path below) —
+        # otherwise /api/session/location reports 0 after the first photo.
+        if session_id in SESSIONS:
+            SESSIONS[session_id]["photo_count"] = 1
 
         # BLIP caption only for logging — the response uses the preset output.
         try:
@@ -3147,7 +3174,12 @@ async def api_locate(
         # mapping is unavailable.
         prev_loc = SESSIONS.get(session_id, {}).get("current_location")
         prior_used = False
-        if prev_loc and _STRUCT_TO_TOPO:
+        # Skip the whole prior block when both boosts are 0 (the default since
+        # the truncation fix made raw retrieval stronger than prior-assisted).
+        # Numerically it was a no-op anyway, but it logged "re-ranked" every
+        # frame, which misleads log analysis into thinking the prior is live.
+        _prior_active = (TOPOLOGY_PRIOR_SAME_BOOST > 0 or TOPOLOGY_PRIOR_NEIGHBOR_BOOST > 0)
+        if _prior_active and prev_loc and _STRUCT_TO_TOPO:
             prev_topo = _STRUCT_TO_TOPO.get(prev_loc)
             if prev_topo:
                 prev_neighbors = _TOPO_ADJ.get(prev_topo, set())
@@ -3197,7 +3229,15 @@ async def api_locate(
                 # fallback path) would make topo_distance return max_d+1
                 # and fire a guaranteed false teleport — mirror the
                 # topology prior, which skips unmapped ids gracefully.
-                if _to_topo(prev_loc) and _to_topo(top1_id):
+                # Skip across scene boundaries: the client switches site_id
+                # when the user walks through the atrium bridge, so a
+                # prev-in-A / current-in-B pair is a legitimate transition,
+                # not a teleport (cell-graph distance across scenes is
+                # "unreachable" and would always fire).
+                _same_scene = (_nav_router is None or
+                               _nav_router.STRUCT_NODE_SCENE.get(prev_loc) ==
+                               _nav_router.STRUCT_NODE_SCENE.get(top1_id))
+                if _same_scene and _to_topo(prev_loc) and _to_topo(top1_id):
                     _d = _topo_d(prev_loc, top1_id)
                     if _d >= 2:
                         teleport_detected = True
@@ -3233,27 +3273,12 @@ async def api_locate(
         nav_lang = session_obj.get("lang", detected_lang) or detected_lang
         nav_meta = {"mode": "legacy", "goal_node_id": None}
         if goal_id and _nav_router is not None:
-            # Cross-scene goal takes priority over the low_conf gate: top1 is
-            # always a node of the requested site (predict filters by site_id),
-            # so the scene-vs-scene verdict is reliable even when the exact
-            # node is uncertain — and no amount of retaking can ever fix a
-            # goal that lives in the other scene.
-            _plan_pre = _nav_router.find_path(top1_id, goal_id)
-            if _plan_pre["status"] == "cross_scene":
-                navigation_response = _nav_router.generate_instruction(
-                    top1_id, goal_id, lang=nav_lang
-                )
-                nav_meta = {
-                    "mode":         "goal_aware",
-                    "goal_node_id": goal_id,
-                    "status":       "cross_scene",
-                    "current_topo": _plan_pre["current_topo"],
-                    "goal_topo":    _plan_pre["goal_topo"],
-                    "hops":         0,
-                }
+            # NOTE: cross-scene goals are now ROUTABLE (the struct graph has a
+            # bridge edge through the atrium), so the old cross-scene special
+            # case is gone — they produce a normal multi-leg route.
             # Suppress goal-aware nav when localisation is low-confidence:
             # routing on a wrong current node is worse than asking for a retake.
-            elif low_conf:
+            if low_conf:
                 if teleport_detected:
                     # Specific message: the previous and current predicted
                     # locations are too far apart to be physically real.
@@ -3293,10 +3318,15 @@ async def api_locate(
                     "current_topo": plan["current_topo"],
                     "goal_topo":    plan["goal_topo"],
                     "hops":         plan["hops"],
+                    "path":         plan.get("path", []),
+                    "cross_scene":  plan.get("cross_scene", False),
                 }
         else:
+            # nav_lang (session lang preferred) — detect_language_from_caption
+            # always returns "en" because BLIP captions are English, so zh
+            # users were getting English instructions on the no-goal path.
             navigation_response = generate_dynamic_navigation_response(
-                site_id, top1_id, confidence, low_conf, matching_data, detected_lang, top1
+                site_id, top1_id, confidence, low_conf, matching_data, nav_lang, top1
             )
 
         # Session location update — skipped when teleport was detected:
@@ -3573,12 +3603,15 @@ async def api_locate(
                 except Exception as e:
                     print(f"⚠️ Failed to collect DG metrics for localization: {e}")
                 
-                # ✅ Detect language from caption and provider
+                # ✅ Language: prefer the explicit session lang — caption-based
+                # detection always says "en" (BLIP captions are English).
                 detected_lang = detect_language_from_caption(cap, provider)
-                
+                _sess_lang = SESSIONS.get(session_id, {}).get("lang")
+                nav_lang_legacy = _sess_lang or detected_lang
+
                 # ✅ Generate dynamic navigation response based on hierarchical fusion results
                 navigation_response = generate_dynamic_navigation_response(
-                    site_id, top1_id, final_confidence, low_conf, matching_data, detected_lang, top1
+                    site_id, top1_id, final_confidence, low_conf, matching_data, nav_lang_legacy, top1
                 )
                 
                 # Format response with detailed scoring and navigation
@@ -4289,6 +4322,8 @@ async def export_session_metrics(session_id: str, format: str = "csv"):
             "status": "exported",
             "timestamp": datetime.utcnow().isoformat()
         }
+    except HTTPException:
+        raise  # don't re-wrap deliberate 4xx into a 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 

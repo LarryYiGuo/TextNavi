@@ -1,83 +1,144 @@
 """nav_router.py — goal-aware navigation: graph routing + instruction generation.
 
-Built on top of the existing topology graph (`backend/topology.json`) and the
-struct→topology mapping in `backend/topology_eval.py`. Pure functions; no I/O
-side effects beyond module import.
+Routes on the STRUCT-level graph embedded in the paper's structure files
+(``Sense_*_Finetuned.fixed.jsonl``): 10 nodes per scene with metric
+coordinates (local 10×7 m plans) and 10 directed edges per scene with
+voice-ready action hints ("veer left to shelf"). A hand-added bridge edge
+connects the two scenes through the atrium, so cross-scene goals are routable.
+
+The coarse topology-cell graph (``topology.json`` + ``STRUCT_TO_TOPOLOGY``)
+remains the EVAL layer — it defines the paper's "useful top-1" metric and is
+deliberately NOT used for routing anymore. The two layers are decoupled:
+upgrading navigation cannot silently change the published metric.
 
 Public API
 ----------
 - ``find_path(current_struct, goal_struct)`` -> dict
+    status: 'arrived' | 'route' | 'unknown'; for 'route' also path (struct
+    nodes), legs ([{to, hint, forward, steps}]), hops, cross_scene.
 - ``generate_instruction(current_struct, goal_struct, lang='en')`` -> str
-- ``match_goal_text(goal_text, retriever, site_id=None)`` -> Optional[str]
-- ``KNOWN_NODES`` -> set[str]   — every struct node we know about
-
-Design notes
-------------
-- The user can be predicted at fine-grained *struct* nodes (e.g.
-  ``poi05_desk_3d_printer``). The topology graph in ``topology.json`` is at
-  coarser *topology* cells (e.g. ``poi_3d_printer_table``). Many struct nodes
-  share a single topology cell — that's why 4 vs 5 is "useful but not strict".
-- For routing we lift current/goal up to their topology cells, BFS the
-  adjacency graph, and turn that into voice-friendly instructions.
-- Three navigation regimes:
-    1. ``arrived``: current_struct == goal_struct
-    2. ``same_cell``: same topology cell, different struct → fall back to
-       fine-grained local guidance using the struct's ``unique_features``.
-    3. ``cross_cell``: BFS path through the topology graph; instruct the user
-       to head toward the next topology cell on the path.
+- ``match_goal_text(goal_text, retriever, site_id=None)`` -> Optional[dict]
+- ``KNOWN_NODES`` -> set[str] — struct nodes that can be localisation outputs
+    and goals (the 18 textmap nodes; poi13/poi17 exist only in the struct
+    graph and can appear as transit waypoints, not goals).
 """
 
 from __future__ import annotations
 
 import json
-import re
 from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from topology_eval import STRUCT_TO_TOPOLOGY, _ADJ as TOPO_ADJ, _TOPOLOGY_TO_SCENE as TOPO_SCENE
+from topology_eval import STRUCT_TO_TOPOLOGY
 
 ROOT = Path(__file__).resolve().parent  # backend/
 TEXTMAP_PATH = ROOT / "data" / "textmap_clean.jsonl"
 
 
 # ---------------------------------------------------------------------------
-# Friendly names — voice-output strings for topology cells and struct nodes.
+# Struct-level navigation graph — loaded from the paper's structure files.
+# Each scene: 10 nodes with metric coordinates (local 10×7 m plan) + 10
+# directed edges with voice-ready action hints. The hints are valid only in
+# the recorded direction; reverse traversal falls back to a generic
+# "head toward X" template (left/right would be mirrored).
 # ---------------------------------------------------------------------------
-# Topology-cell friendly names (one entry per cell that appears in topology.json).
-TOPOLOGY_FRIENDLY_EN: dict[str, str] = {
-    # SCENE_A_MS
-    "dp_ms_entrance":              "the Maker Space entrance",
-    "atrium_entry":                "the atrium entry",
-    "dp_bookshelf_qr":             "the QR bookshelf",
-    "poi_3d_printer_table":        "the 3D printer area",
-    "poi_component_drawer_wall":   "the component drawer wall",
-    # SCENE_B_STUDIO
-    "dp_studio_entry":             "the studio entrance",
-    "node_window_glass":           "the window seating area",
-    "poi_orange_sofa":             "the orange sofa zone",
-    "poi_orange_sofa_chair":       "the orange chair area",
-    "node_mid_studio":             "the central studio workspace",
+STRUCT_FILES = {
+    "SCENE_A_MS":     ROOT / "data" / "Sense_A_Finetuned.fixed.jsonl",
+    "SCENE_B_STUDIO": ROOT / "data" / "Sense_B_Finetuned.fixed.jsonl",
 }
-TOPOLOGY_FRIENDLY_ZH: dict[str, str] = {
-    "dp_ms_entrance":              "Maker Space 入口",
-    "atrium_entry":                "中庭入口",
-    "dp_bookshelf_qr":             "二维码书架区",
-    "poi_3d_printer_table":        "3D 打印机区域",
-    "poi_component_drawer_wall":   "元件抽屉墙区",
-    "dp_studio_entry":             "工作室入口",
-    "node_window_glass":           "窗边休息区",
-    "poi_orange_sofa":             "橙色沙发区",
-    "poi_orange_sofa_chair":       "橙色椅子区",
-    "node_mid_studio":             "工作室中央工作区",
+# The immutable paper data still uses the old poi09 id; rename on load.
+_ID_RENAMES = {"poi09_qr_bookshelf": "poi09_chair_on_yline"}
+
+# Cross-scene bridge: the structure data names poi08 "To Atrium (SenseB
+# connection)" and the Studio entrance (poi11) sits across the atrium.
+# One physical link, two directed hints — makes cross-scene goals routable.
+_BRIDGE = [
+    ("poi08_to_atrium", "poi11_di_hub_glass_box",
+     "cross the atrium to the Studio entrance"),
+    ("poi11_di_hub_glass_box", "poi08_to_atrium",
+     "cross the atrium back to the Maker Space"),
+]
+
+# Hand-translated zh versions of every action hint (keys = exact en strings).
+HINT_ZH = {
+    # SCENE_A
+    "veer left to shelf":                    "斜向左走到书架",
+    "continue left a few steps":             "继续向左走几步",
+    "open threshold to Atrium":              "穿过开口进入中庭",
+    "move right along the bottom wall":      "沿底侧墙向右走",
+    "continue forward along right wall":     "沿右侧墙继续直行",
+    "continue forward to printer bay":       "继续直行到打印机区",
+    "left of printer bay, desk printer":     "在打印机区左侧找桌面打印机",
+    "turn slightly left across aisle":       "稍向左转穿过走道",
+    "continue left toward top-left":         "继续向左前方走",
+    "follow yellow line via brown pad chair": "沿黄色引导线走，途经软垫椅",
+    # SCENE_B
+    "left along bottom edge":                "沿底边向左走",
+    "left to inset wall":                    "向左走到内嵌墙",
+    "forward to main table":                 "直行到主工作桌",
+    "left toward window edge":               "向左朝窗边走",
+    "right a few steps to green sofa":       "向右走几步到绿沙发",
+    "left to corner storage":                "向左到角落储物区",
+    "right toward filming table":            "向右朝拍摄桌走",
+    "slight right to large TV":              "稍向右到大屏幕",
+    "forward to sofa zone":                  "直行到沙发区",
+    "diagonal right across the corner":      "沿对角线向右穿过角落",
+    # Bridge
+    "cross the atrium to the Studio entrance":  "穿过中庭，前往工作室入口",
+    "cross the atrium back to the Maker Space": "穿过中庭，回到创客空间",
 }
 
 
-def _topo_friendly(topo: Optional[str], lang: str) -> str:
-    if not topo:
-        return "the destination" if lang == "en" else "目的地"
-    table = TOPOLOGY_FRIENDLY_ZH if lang == "zh" else TOPOLOGY_FRIENDLY_EN
-    return table.get(topo, topo.replace("_", " "))
+def _load_struct_graph():
+    """Build {node: [(neighbour, hint, hint_is_forward)]} + coords + scene."""
+    adj: dict[str, list] = {}
+    coords: dict[str, tuple] = {}
+    node_scene: dict[str, str] = {}
+
+    def _rn(nid):
+        return _ID_RENAMES.get(nid, nid)
+
+    for scene, path in STRUCT_FILES.items():
+        try:
+            topo = json.load(open(path))["input"]["topology"]
+        except Exception as e:
+            print(f"⚠️ nav_router: failed to load struct graph from {path.name}: {e}")
+            continue
+        for n in topo.get("nodes", []):
+            nid = _rn(n["id"])
+            c = n.get("geometry", {}).get("center")
+            if c and len(c) == 2:
+                coords[nid] = (float(c[0]), float(c[1]))
+            node_scene[nid] = scene
+            adj.setdefault(nid, [])
+        for e in topo.get("edges", []):
+            a, b = _rn(e["from"]), _rn(e["to"])
+            hint = e.get("action_hint", "")
+            adj.setdefault(a, []).append((b, hint, True))   # recorded direction
+            adj.setdefault(b, []).append((a, hint, False))  # reverse: hint invalid
+    for a, b, hint in _BRIDGE:
+        if a in adj and b in adj:
+            adj[a].append((b, hint, True))
+    return adj, coords, node_scene
+
+
+STRUCT_ADJ, STRUCT_COORDS, STRUCT_NODE_SCENE = _load_struct_graph()
+
+_STEP_METERS = 0.6  # cautious indoor step length for BVI users
+
+
+def _steps_between(a: str, b: str) -> Optional[int]:
+    """Approximate step count between two nodes in the SAME scene. The two
+    scenes use separate local coordinate frames, so cross-scene distances
+    are meaningless (returns None — instruction omits the step count)."""
+    if STRUCT_NODE_SCENE.get(a) != STRUCT_NODE_SCENE.get(b):
+        return None
+    ca, cb = STRUCT_COORDS.get(a), STRUCT_COORDS.get(b)
+    if not ca or not cb:
+        return None
+    dist = ((ca[0] - cb[0]) ** 2 + (ca[1] - cb[1]) ** 2) ** 0.5
+    return max(1, round(dist / _STEP_METERS))
 
 
 # ---------------------------------------------------------------------------
@@ -148,83 +209,74 @@ def _struct_features(struct_id: Optional[str], lang: str = "en") -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Path finding (topology-level BFS).
+# Path finding — BFS on the struct-level graph (bridge edge makes the whole
+# building one connected component, so cross-scene goals route normally).
 # ---------------------------------------------------------------------------
 def find_path(current_struct: Optional[str], goal_struct: Optional[str]) -> dict:
     """Plan a navigation path from current struct node to goal struct node.
 
-    Returns a dict::
+    Returns::
 
         {
-            'status':       'arrived' | 'same_cell' | 'cross_cell' | 'unknown',
-            'current_topo': str | None,
+            'status':       'arrived' | 'route' | 'unknown',
+            'path':         list[str],   # struct nodes incl. both endpoints
+            'legs':         list[dict],  # per edge: {to, hint, forward, steps}
+            'hops':         int,         # len(path) - 1
+            'cross_scene':  bool,        # route crosses the atrium bridge
+            'current_topo': str | None,  # coarse cells, telemetry only
             'goal_topo':    str | None,
-            'path':         list[str],  # topology cells, full path inc. endpoints
-            'hops':         int,        # len(path) - 1  (0 for arrived/same_cell)
         }
 
-    'unknown' covers the case where either side has no struct→topology mapping,
-    or the goal cell is unreachable from the current cell in the graph.
+    'unknown' = either endpoint missing from the struct graph (e.g. the
+    caller couldn't place the user). The graph is connected, so a known pair
+    always routes.
     """
-    if not goal_struct:
-        return {"status": "unknown", "current_topo": None, "goal_topo": None,
-                "path": [], "hops": 0}
-
     current_topo = STRUCT_TO_TOPOLOGY.get(current_struct) if current_struct else None
-    goal_topo = STRUCT_TO_TOPOLOGY.get(goal_struct)
+    goal_topo = STRUCT_TO_TOPOLOGY.get(goal_struct) if goal_struct else None
+    base = {"current_topo": current_topo, "goal_topo": goal_topo,
+            "path": [], "legs": [], "hops": 0, "cross_scene": False}
 
-    if not goal_topo:
-        return {"status": "unknown", "current_topo": current_topo,
-                "goal_topo": None, "path": [], "hops": 0}
+    if not goal_struct or goal_struct not in STRUCT_ADJ:
+        return {"status": "unknown", **base, "goal_known": False}
+    if not current_struct or current_struct not in STRUCT_ADJ:
+        return {"status": "unknown", **base, "goal_known": True}
+    if current_struct == goal_struct:
+        return {"status": "arrived", **base, "path": [current_struct],
+                "goal_known": True}
 
-    if current_struct and current_struct == goal_struct:
-        return {"status": "arrived", "current_topo": current_topo,
-                "goal_topo": goal_topo, "path": [current_topo], "hops": 0}
-
-    if not current_topo:
-        # We have a goal but the system can't place the user. Caller decides
-        # whether to ask the user to retake.
-        return {"status": "unknown", "current_topo": None,
-                "goal_topo": goal_topo, "path": [], "hops": 0}
-
-    if current_topo == goal_topo:
-        return {"status": "same_cell", "current_topo": current_topo,
-                "goal_topo": goal_topo, "path": [current_topo], "hops": 0}
-
-    # BFS on topology graph
-    parent: dict[str, Optional[str]] = {current_topo: None}
-    frontier = deque([current_topo])
+    parent: dict[str, Optional[str]] = {current_struct: None}
+    parent_edge: dict[str, tuple] = {}
+    frontier = deque([current_struct])
     while frontier:
         node = frontier.popleft()
-        if node == goal_topo:
+        if node == goal_struct:
             break
-        for nb in TOPO_ADJ.get(node, set()):
-            if nb not in parent:
-                parent[nb] = node
-                frontier.append(nb)
+        for nbr, hint, fwd in STRUCT_ADJ.get(node, []):
+            if nbr not in parent:
+                parent[nbr] = node
+                parent_edge[nbr] = (hint, fwd)
+                frontier.append(nbr)
 
-    if goal_topo not in parent:
-        # The two scene graphs are disconnected, so a goal in the other scene
-        # is *always* unreachable. Surface that as its own status — telling
-        # the user to "retake the photo" (the generic unknown message) can
-        # never fix a cross-scene goal.
-        cur_scene = TOPO_SCENE.get(current_topo)
-        goal_scene = TOPO_SCENE.get(goal_topo)
-        if cur_scene and goal_scene and cur_scene != goal_scene:
-            return {"status": "cross_scene", "current_topo": current_topo,
-                    "goal_topo": goal_topo, "goal_scene": goal_scene,
-                    "path": [], "hops": 0}
-        return {"status": "unknown", "current_topo": current_topo,
-                "goal_topo": goal_topo, "path": [], "hops": 0}
+    if goal_struct not in parent:
+        # Shouldn't happen (graph is connected) — defensive.
+        return {"status": "unknown", **base, "goal_known": True}
 
-    # Reconstruct
-    path = [goal_topo]
+    path = [goal_struct]
     while parent[path[-1]] is not None:
         path.append(parent[path[-1]])
     path.reverse()
 
-    return {"status": "cross_cell", "current_topo": current_topo,
-            "goal_topo": goal_topo, "path": path, "hops": len(path) - 1}
+    legs = []
+    for i in range(1, len(path)):
+        hint, fwd = parent_edge[path[i]]
+        legs.append({"to": path[i], "hint": hint, "forward": fwd,
+                     "steps": _steps_between(path[i - 1], path[i])})
+
+    cross = any(STRUCT_NODE_SCENE.get(path[i]) != STRUCT_NODE_SCENE.get(path[i + 1])
+                for i in range(len(path) - 1))
+
+    return {"status": "route", **base, "path": path, "legs": legs,
+            "hops": len(path) - 1, "cross_scene": cross, "goal_known": True}
 
 
 # ---------------------------------------------------------------------------
@@ -233,11 +285,13 @@ def find_path(current_struct: Optional[str], goal_struct: Optional[str]) -> dict
 def generate_instruction(current_struct: Optional[str],
                          goal_struct: Optional[str],
                          lang: str = "en") -> str:
-    """Voice-friendly one-shot navigation instruction.
+    """Voice-friendly one-shot navigation instruction (≤ ~2 sentences for TTS).
 
-    The output is intentionally short (≤ ~2 sentences) so it's suitable for
-    TTS playback. For low-confidence or unknown cases the caller should
-    suppress this and ask the user to retake instead.
+    Built from the struct-level route: the first leg uses the recorded action
+    hint when traversing the edge in its recorded direction ("veer left to
+    shelf"); reverse traversals fall back to "head toward X" (the hint's
+    left/right would be mirrored). Step counts come from the metric node
+    coordinates (~0.6 m per cautious indoor step).
     """
     plan = find_path(current_struct, goal_struct)
     status = plan["status"]
@@ -249,108 +303,63 @@ def generate_instruction(current_struct: Optional[str],
             return f"您已到达目的地：{goal_label}。"
         return f"You have arrived at {goal_label}."
 
-    if status == "cross_scene":
-        scene_names = {
-            "SCENE_A_MS":     ("the Maker Space", "创客空间"),
-            "SCENE_B_STUDIO": ("the Studio",      "工作室"),
-        }
-        en_name, zh_name = scene_names.get(plan.get("goal_scene", ""),
-                                           ("another area", "另一个区域"))
-        if is_zh:
-            return (f"目的地{goal_label}在{zh_name}，不在当前区域。"
-                    f"请先移动到{zh_name}，到达后再拍照继续导航。")
-        return (f"The destination {goal_label} is in {en_name}, not in your "
-                f"current area. Please move to {en_name} first, then take a "
-                f"photo there to continue.")
-
     if status == "unknown":
-        # Distinguish the two flavours: goal-not-in-map vs current-not-placed
-        if not plan["goal_topo"]:
+        if not plan.get("goal_known"):
             if is_zh:
                 return "抱歉，我不认识这个目的地。请换一个目标。"
             return "Sorry, I don't recognise that destination. Please pick another goal."
-        if not plan["current_topo"]:
-            if is_zh:
-                return "我还无法判断您的位置，请换个角度再拍一张。"
-            return "I can't place your location yet — please retake the photo from a different angle."
-        # Reachable-but-not in graph (shouldn't happen if data is consistent)
         if is_zh:
-            return f"暂时找不到去{goal_label}的路线，请重新拍照。"
-        return f"I can't find a route to {goal_label} right now — please retake the photo."
+            return "我还无法判断您的位置，请换个角度再拍一张。"
+        return "I can't place your location yet — please retake the photo from a different angle."
 
-    if status == "same_cell":
-        # Local intra-cell disambiguation. We don't have spatial relations
-        # between struct nodes in the same cell, so the safest move is to
-        # describe the *goal's* distinctive features and ask the user to look.
-        features = _struct_features(goal_struct, lang)
-        if features:
-            # Pick up to two short features; voice playback friendly.
-            feat_str = features[0]
-            if len(features) > 1 and len(features[1]) < 60:
-                if is_zh:
-                    feat_str = f"{features[0]}；{features[1]}"
-                else:
-                    feat_str = f"{features[0]}, and {features[1]}"
+    # status == "route"
+    legs = plan["legs"]
+    first = legs[0]
+    steps = first["steps"]
+
+    # First-leg lead: recorded hint when walking the edge forward, otherwise
+    # a generic "head toward" with the next waypoint's label.
+    if first["forward"] and first["hint"]:
+        lead_en = first["hint"][0].upper() + first["hint"][1:]
+        lead_zh = HINT_ZH.get(first["hint"], first["hint"])
+    else:
+        nxt = _struct_short(first["to"], lang)
+        lead_en = f"Head toward {nxt}"
+        lead_zh = f"朝{nxt}方向走"
+
+    steps_en = f", about {steps} steps" if steps else ""
+    steps_zh = f"，大约 {steps} 步" if steps else ""
+
+    if len(legs) == 1:
+        feats = _struct_features(goal_struct, lang)
+        feat_en = f" Look for {feats[0]}." if feats else ""
+        feat_zh = f"到达后请寻找：{feats[0]}。" if feats else ""
+        if not (first["forward"] and first["hint"]):
+            # Fallback lead already names the goal ("Head toward X") — don't
+            # repeat it with "to reach X".
             if is_zh:
-                return (f"您已经非常接近{goal_label}了。请寻找：{feat_str}。"
-                        f"如果看不到，请慢慢转动方向再拍一张。")
-            return (f"You are very close to {goal_label}. Look for: {feat_str}. "
-                    f"If you can't see it, turn slowly and retake a photo.")
-        # No features available
+                return f"{lead_zh}{steps_zh}。{feat_zh}"
+            return f"{lead_en}{steps_en}.{feat_en}"
         if is_zh:
-            return f"您已经在{goal_label}附近。请慢慢看一圈寻找它。"
-        return f"You are near {goal_label}. Please look around to spot it."
+            return f"{lead_zh}{steps_zh}，即可到达{goal_label}。{feat_zh}"
+        return f"{lead_en}{steps_en} to reach {goal_label}.{feat_en}"
 
-    # cross_cell
-    path = plan["path"]
-    next_topo = path[1] if len(path) > 1 else plan["goal_topo"]
-    goal_topo = plan["goal_topo"]
-    hops = plan["hops"]
-    next_friendly = _topo_friendly(next_topo, lang)
-    goal_topo_friendly = _topo_friendly(goal_topo, lang)
-
-    # Suppress the redundant "look for X there" tail when the goal's short
-    # label adds nothing beyond the destination cell's friendly name: either
-    # a direct substring (also covers zh), or every content token of the goal
-    # label already appears in the cell name. A label with extra
-    # disambiguating tokens (e.g. "desk 3d printer" vs "the 3D printer area"
-    # — "desk" is new information) is NOT redundant and the tail is kept.
-    def _label_is_redundant(label: str, cell_friendly: str) -> bool:
-        a = label.lower().strip()
-        b = cell_friendly.lower().strip()
-        if not a or not b:
-            return False
-        if a in b:
-            return True
-        ta = set(re.findall(r"[a-z0-9]+", a))
-        tb = set(re.findall(r"[a-z0-9]+", b))
-        return bool(ta) and ta <= tb
-
-    if hops == 1:
-        if _label_is_redundant(goal_label, next_friendly):
-            if is_zh:
-                return f"请朝{next_friendly}方向走过去。"
-            return f"Head toward {next_friendly}."
+    # Multi-leg: speak the first leg, summarise the rest. Cross-scene routes
+    # get an explicit "other area" note instead of a step count (the scenes
+    # use separate coordinate frames).
+    remaining = plan["hops"] - 1
+    wp_en = "waypoint" if remaining == 1 else "waypoints"
+    if plan["cross_scene"]:
         if is_zh:
-            return (f"请朝{next_friendly}方向走过去，到了以后寻找{goal_label}。")
-        return (f"Head toward {next_friendly}, then look for {goal_label} there.")
-
-    # Multi-hop: tell the user the immediate next cell + the destination cell.
-    # When the route is unusually long (hops >= 3, well beyond the current
-    # scene-graph diameter of 2), append a gentle suspicion prompt — either the
-    # graph is wrong or the user is on the far side of the building from a
-    # surprising start. Future-proofs for bigger floor plans.
-    far_suffix_en = (" The goal is several rooms away — if that surprises you, "
-                     "please retake a photo to confirm your current location.")
-    far_suffix_zh = "（目标离您较远，如果这看起来不对，请重新拍照确认当前位置。）"
-
+            return (f"{lead_zh}{steps_zh}，然后继续前往{goal_label}"
+                    f"（目的地在另一个区域，途经 {remaining} 个参照点）。")
+        return (f"{lead_en}{steps_en}, then continue toward {goal_label} "
+                f"(it's in the other area, {remaining} {wp_en} to go).")
     if is_zh:
-        base = (f"请先朝{next_friendly}方向走，然后继续前往{goal_topo_friendly}，"
-                f"在那里寻找{goal_label}。")
-        return base + far_suffix_zh if hops >= 3 else base
-    base = (f"First head toward {next_friendly}, then continue on to "
-            f"{goal_topo_friendly}, where you'll find {goal_label}.")
-    return base + far_suffix_en if hops >= 3 else base
+        return (f"{lead_zh}{steps_zh}，然后继续前往{goal_label}"
+                f"（还需经过 {remaining} 个参照点）。")
+    return (f"{lead_en}{steps_en}, then continue toward {goal_label} "
+            f"({remaining} more {wp_en}).")
 
 
 # ---------------------------------------------------------------------------
