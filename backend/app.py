@@ -816,8 +816,18 @@ def _now_ms():
 
 # 🔧 FIX: 调整低置信度阈值，让60%+的confidence不再显示警告
 # 低置信度阈值配置 - 双通道模式，优化阈值
-LOWCONF_SCORE_TH = float(os.getenv("LOWCONF_SCORE_TH", "0.50"))  # 🔧 FIX P1-5: 跟论文 §3.4 对齐（confidence < 0.50 → 请求新照片）
-LOWCONF_MARGIN_TH = float(os.getenv("LOWCONF_MARGIN_TH", "0.10"))  # 🔧 FIX P1-5: 跟论文 §3.4 对齐（margin < 0.10 → 请求新照片）
+# 🔧 Recalibrated for SigLIP (2026-06-12). The old defaults (0.50 / 0.10,
+# paper §3.4) were tuned for the legacy fusion pipeline whose margins were
+# typically 0.5+. SigLIP confidence margins on the 37-photo set span
+# 0.002–0.39 (median 0.04), so margin<0.10 flagged 29/37 photos as low_conf
+# — 26 of which were actually useful — and the goal-aware nav gate turned
+# 78% of requests into "please retake". Margin also turned out to be a weak
+# error signal here (the 3 real misses' margins sit inside the useful
+# distribution; near-ties between adjacent similar nodes are normal with 18
+# candidates). New defaults flag ~8%; cross-frame teleport detection is the
+# primary safety net.
+LOWCONF_SCORE_TH = float(os.getenv("LOWCONF_SCORE_TH", "0.45"))   # confidence < th → ask to retake
+LOWCONF_MARGIN_TH = float(os.getenv("LOWCONF_MARGIN_TH", "0.01"))  # near-exact tie → ask to retake
 
 ENABLE_CONTINUITY_BOOST = os.getenv("ENABLE_CONTINUITY_BOOST", "true").lower() == "true"
 

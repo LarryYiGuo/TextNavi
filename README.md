@@ -69,8 +69,11 @@ photo ─▶ SigLIP-so400m image embed ─▶ cosine vs 18 node text embeds
 ENABLE_SIGLIP=true                          # default; false → legacy fusion only
 SIGLIP_MODEL=google/siglip-so400m-patch14-384
 
-LOWCONF_SCORE_TH=0.50
-LOWCONF_MARGIN_TH=0.10                      # SigLIP-specific recalibration pending
+LOWCONF_SCORE_TH=0.45                       # recalibrated for SigLIP: old 0.50/0.10
+LOWCONF_MARGIN_TH=0.01                      # (legacy-fusion era) flagged 78% of photos
+                                            # as low_conf; margin is a weak error
+                                            # signal here — teleport detection is the
+                                            # primary safety net
 
 TOPOLOGY_PRIOR_SAME_BOOST=0                 # prior OFF by default: raw SigLIP (91.9%)
 TOPOLOGY_PRIOR_NEIGHBOR_BOOST=0             # now outperforms prior-assisted (86.5%)
