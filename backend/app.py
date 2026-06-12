@@ -3043,7 +3043,14 @@ async def api_locate(
         SESSIONS["_photo_count"] = {}
     SESSIONS["_photo_count"].setdefault(session_key, 0)
 
-    is_warmup = first_photo or SESSIONS["_photo_count"][session_key] == 0
+    # Implicit warmup (photo_count==0 → return the preset opening instead of a
+    # prediction) is the paper experiment's orientation phase. For real field
+    # use it silently swallows the first photo of EVERY scene switch (the key
+    # includes site_id) and confuses users with "Top1: None". Default OFF;
+    # the explicit first_photo=true client flag still triggers warmup, and
+    # WARMUP_IMPLICIT_FIRST_PHOTO=true restores the old protocol behaviour.
+    _implicit_warmup = os.getenv("WARMUP_IMPLICIT_FIRST_PHOTO", "false").lower() == "true"
+    is_warmup = first_photo or (_implicit_warmup and SESSIONS["_photo_count"][session_key] == 0)
     if is_warmup:
         reason = "first_photo flag" if first_photo else f"photo_count==0 for {session_key}"
         print(f"📸 Warmup path ({reason})")

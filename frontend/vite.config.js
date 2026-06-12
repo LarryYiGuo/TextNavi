@@ -10,7 +10,10 @@ export default defineConfig({
     https: true,
     proxy: {
       '/api': {
-        target: 'http://192.168.1.87:8001',  // 更新为当前IP地址
+        // The proxy runs on the dev machine itself, so localhost always
+        // reaches the backend no matter which network/IP the Mac is on —
+        // no more editing this file when the LAN IP changes.
+        target: 'http://localhost:8001',
         changeOrigin: true,
         secure: false,
       }
